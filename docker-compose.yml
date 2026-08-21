@@ -5,13 +5,11 @@ services:
   tsmusicbot-custom:
     image: ghcr.1ms.run/muyan6/teamspeak-music-bot:latest
     container_name: tsmusicbot-custom
-    # Use host network so the bot can reach TS3 server on LAN
-    # If your TS3 server is on the same machine, this is required
+    # 使用 host 网络模式，方便机器人连接部署在同机的 TS3 服务端
     network_mode: host
-    # If you prefer port mapping instead of host network, comment out
-    # network_mode and uncomment ports:
+    # 如果不用 host 模式（例如 3000 端口已被旧容器占用，可映射到其他端口如 3001）：
     # ports:
-    #   - "3001:3000"     # WebUI (avoid clashing with 3000)
+    #   - "3001:3000"
     volumes:
       - tsmusicbot-custom-data:/app/data
     restart: unless-stopped

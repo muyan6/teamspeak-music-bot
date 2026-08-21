@@ -18,6 +18,6 @@ echo   Docker Image Built Successfully: tsmusicbot:latest
 echo ===================================================
 echo.
 echo You can run the container with:
-echo   docker run -d --name tsmusicbot --restart unless-stopped -p 3000:3000 -v tsmusicbot-data:/app/data tsmusicbot:latest
+echo   docker run -d --name tsmusicbot-custom --restart unless-stopped -p 3001:3000 -v tsmusicbot-custom-data:/app/data tsmusicbot:latest
 echo.
 pause
