@@ -280,6 +280,19 @@ export class TS3Client extends EventEmitter {
 
     this.client.on("textMessage", (msg: TextMessage) => {
       if (msg.invokerID === this.clientId) return;
+      if (msg.targetMode === 2) {
+        const myCid = this.getChannelId();
+        const existing = this.visibleClients.get(msg.invokerID) ?? {
+          id: msg.invokerID,
+          nickname: msg.invokerName,
+          uid: msg.invokerUID,
+          serverGroups: msg.invokerGroups ?? [],
+          channelID: myCid,
+          type: 0,
+        };
+        if (myCid !== 0n) existing.channelID = myCid;
+        this.visibleClients.set(msg.invokerID, existing);
+      }
       this.emit("textMessage", toTS3TextMessage(msg));
     });
 
@@ -287,6 +300,11 @@ export class TS3Client extends EventEmitter {
       // The library normally suppresses our own packets; retain the explicit
       // guard so a future protocol change cannot make a bot duck itself.
       if (voice.clientId === this.clientId) return;
+      const myCid = this.getChannelId();
+      const existing = this.visibleClients.get(voice.clientId);
+      if (existing && myCid !== 0n) {
+        existing.channelID = myCid;
+      }
       const clientUid = this.visibleClientUids.get(voice.clientId);
       const activity: TS3VoiceActivity = {
         clientId: voice.clientId,
