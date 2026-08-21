@@ -255,6 +255,29 @@ export class TS3Client extends EventEmitter {
       },
     });
 
+    const rawHandler = (this.client as any).handler;
+    if (rawHandler && typeof rawHandler.onPacket === "function") {
+      const origOnPacket = rawHandler.onPacket.bind(rawHandler);
+      rawHandler.onPacket = (pkt: any) => {
+        try {
+          const type = pkt.typeFlagged & 15;
+          if ((type === 2 || type === 3) && pkt.data && pkt.data.length > 0) {
+            const text = Buffer.from(pkt.data).toString("utf8");
+            const lines = text.split(/[\n\0]/);
+            for (const line of lines) {
+              const clean = line.replace(/\r$/, "");
+              if (clean) {
+                this.handleRawNotification(clean);
+              }
+            }
+          }
+        } catch {
+          // ignore parsing error
+        }
+        return origOnPacket(pkt);
+      };
+    }
+
     this.client.on("textMessage", (msg: TextMessage) => {
       if (msg.invokerID === this.clientId) return;
       this.emit("textMessage", toTS3TextMessage(msg));
@@ -282,13 +305,21 @@ export class TS3Client extends EventEmitter {
     });
 
     this.client.on("clientEnter", (info: ClientInfo) => {
-      this.visibleClients.set(info.id, { ...info });
+      const existing = this.visibleClients.get(info.id);
+      const channelID = (info.channelID && info.channelID !== 0n)
+        ? BigInt(info.channelID)
+        : (existing?.channelID ?? 0n);
+
+      this.visibleClients.set(info.id, {
+        ...info,
+        channelID,
+      });
       this.rememberVisibleClientUid(info.id, info.uid);
       this.logger.debug(
-        { nickname: info.nickname, id: info.id, channelID: info.channelID?.toString() },
+        { nickname: info.nickname, id: info.id, channelID: channelID.toString() },
         "Client entered"
       );
-      this.emit("clientEnter", info);
+      this.emit("clientEnter", { ...info, channelID });
     });
 
     this.client.on("clientLeave", (ev: ClientLeftViewEvent) => {
@@ -338,6 +369,23 @@ export class TS3Client extends EventEmitter {
       `Logged in (visible client, ${this.detectedProtocol.toUpperCase()} server)`,
     );
 
+    try {
+      const info = await getClientInfo(this.client, this.clientId);
+      if (info && (info.cid || (info as any).client_channel_id)) {
+        const rawCid = info.cid || (info as any).client_channel_id;
+        this.currentChannelId = BigInt(rawCid);
+        this.logger.info({ currentChannelId: this.currentChannelId.toString() }, "Resolved bot channel ID via clientinfo");
+      }
+    } catch (err) {
+      this.logger.warn({ err }, "Could not resolve initial bot channel ID via clientinfo");
+    }
+
+    try {
+      await this.sendCommandNoWait("channelsubscribeall");
+    } catch {
+      // Ignore if channelsubscribeall is not permitted
+    }
+
     // Join channel by numeric ID (takes precedence) or by name
     if (this.options.channelId) {
       await this.joinChannel(this.options.channelId, this.options.channelPassword);
@@ -359,6 +407,9 @@ export class TS3Client extends EventEmitter {
       try {
         await clientMove(this.client, this.clientId, BigInt(channelName), password);
         this.currentChannelId = BigInt(channelName);
+        try {
+          await this.sendCommandNoWait(`channelsubscribe cid=${channelName}`);
+        } catch {}
         this.logger.info({ channelName }, "Joined channel");
       } catch (err) {
         this.logger.error({ err, channelName }, "Failed to join channel");
@@ -377,6 +428,9 @@ export class TS3Client extends EventEmitter {
 
       await clientMove(this.client, this.clientId, channel.id, password);
       this.currentChannelId = channel.id;
+      try {
+        await this.sendCommandNoWait(`channelsubscribe cid=${channel.id}`);
+      } catch {}
       this.logger.info(
         { channelName, cid: channel.id.toString() },
         "Joined channel"
@@ -397,7 +451,18 @@ export class TS3Client extends EventEmitter {
   }
 
   async getClientsInChannel(): Promise<ClientInfo[]> {
-    if (!this.client) return [];
+    if (!this.client || this.clientId === 0) return [];
+
+    if (this.currentChannelId === 0n) {
+      try {
+        const info = await getClientInfo(this.client, this.clientId);
+        if (info && (info.cid || (info as any).client_channel_id)) {
+          const rawCid = info.cid || (info as any).client_channel_id;
+          this.currentChannelId = BigInt(rawCid);
+        }
+      } catch {}
+    }
+
     const myChannelId = this.getChannelId();
     if (myChannelId === 0n) return [];
     const myChannelStr = myChannelId.toString();
@@ -562,6 +627,87 @@ export class TS3Client extends EventEmitter {
     }
     this.visibleClientUidReleaseTimers.clear();
     this.visibleClientUids.clear();
+  }
+
+  private handleRawNotification(rawLine: string): void {
+    const spaceIdx = rawLine.indexOf(" ");
+    if (spaceIdx < 0) return;
+    const cmdName = rawLine.substring(0, spaceIdx);
+    if (!cmdName.startsWith("notify")) return;
+
+    const rest = rawLine.substring(spaceIdx + 1);
+    const items = rest.split("|");
+
+    for (const item of items) {
+      const params: Record<string, string> = {};
+      const parts = item.trim().split(/\s+/);
+      for (const part of parts) {
+        const eqIdx = part.indexOf("=");
+        if (eqIdx !== -1) {
+          const k = part.substring(0, eqIdx);
+          const rawV = part.substring(eqIdx + 1);
+          params[k] = rawV
+            .replace(/\\s/g, " ")
+            .replace(/\\p/g, "|")
+            .replace(/\\\//g, "/")
+            .replace(/\\\\/g, "\\");
+        }
+      }
+      this.applyNotificationItem(cmdName, params);
+    }
+  }
+
+  private applyNotificationItem(cmdName: string, params: Record<string, string>): void {
+    if (cmdName === "notifycliententerview") {
+      const clid = parseInt(params.clid ?? "0", 10);
+      const targetCidStr = params.ctid ?? params.cid ?? "";
+      const targetCid = targetCidStr ? BigInt(targetCidStr) : 0n;
+      const clientType = parseInt(params.client_type ?? "0", 10);
+      if (clid > 0) {
+        const nickname = params.client_nickname ?? "";
+        const uid = params.client_unique_identifier ?? "";
+        const serverGroups = params.client_servergroups ? params.client_servergroups.split(",") : [];
+        const existing = this.visibleClients.get(clid) ?? {
+          id: clid,
+          nickname,
+          uid,
+          serverGroups,
+          channelID: targetCid,
+          type: clientType,
+        };
+        if (nickname) existing.nickname = nickname;
+        if (uid) existing.uid = uid;
+        if (targetCid !== 0n) existing.channelID = targetCid;
+        existing.type = clientType;
+        if (uid) this.rememberVisibleClientUid(clid, uid);
+        this.visibleClients.set(clid, existing);
+      }
+    } else if (cmdName === "notifyclientmoved") {
+      const clid = parseInt(params.clid ?? "0", 10);
+      const targetCidStr = params.ctid ?? "";
+      const targetCid = targetCidStr ? BigInt(targetCidStr) : 0n;
+      if (clid > 0) {
+        const existing = this.visibleClients.get(clid) ?? {
+          id: clid,
+          nickname: "",
+          uid: "",
+          serverGroups: [],
+          channelID: targetCid,
+          type: 0,
+        };
+        if (targetCid !== 0n) existing.channelID = targetCid;
+        if (clid === this.clientId && targetCid !== 0n) {
+          this.currentChannelId = targetCid;
+        }
+        this.visibleClients.set(clid, existing);
+      }
+    } else if (cmdName === "notifyclientleftview") {
+      const clid = parseInt(params.clid ?? "0", 10);
+      if (clid > 0) {
+        this.visibleClients.delete(clid);
+        this.releaseVisibleClientUid(clid);
+      }
+    }
   }
 
   disconnect(): void {
