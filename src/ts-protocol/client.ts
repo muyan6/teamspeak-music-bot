@@ -107,6 +107,7 @@ export class TS3Client extends EventEmitter {
   private identity: Identity;
   private readonly clientUid: string;
   private clientId = 0;
+  private currentChannelId: bigint = 0n;
   private readonly visibleClients = new Map<number, ClientInfo>();
   private readonly visibleClientUids = new Map<number, string>();
   private readonly visibleClientUidReleaseTimers = new Map<
@@ -298,21 +299,25 @@ export class TS3Client extends EventEmitter {
     });
 
     this.client.on("clientMoved", (ev: ClientMovedEvent) => {
+      const targetCid = BigInt(ev.targetChannelID);
       const existing = this.visibleClients.get(ev.id);
       if (existing) {
-        existing.channelID = ev.targetChannelID;
+        existing.channelID = targetCid;
       } else {
         this.visibleClients.set(ev.id, {
           id: ev.id,
           nickname: ev.invokerName ?? "",
           uid: ev.invokerUID ?? "",
           serverGroups: [],
-          channelID: ev.targetChannelID,
+          channelID: targetCid,
           type: 0,
         });
       }
+      if (ev.id === this.clientId) {
+        this.currentChannelId = targetCid;
+      }
       this.logger.debug(
-        { id: ev.id, targetChannelID: ev.targetChannelID.toString() },
+        { id: ev.id, targetChannelID: targetCid.toString() },
         "Client moved"
       );
       this.emit("clientMoved", ev);
@@ -353,6 +358,7 @@ export class TS3Client extends EventEmitter {
     if (isNumeric) {
       try {
         await clientMove(this.client, this.clientId, BigInt(channelName), password);
+        this.currentChannelId = BigInt(channelName);
         this.logger.info({ channelName }, "Joined channel");
       } catch (err) {
         this.logger.error({ err, channelName }, "Failed to join channel");
@@ -370,6 +376,7 @@ export class TS3Client extends EventEmitter {
       }
 
       await clientMove(this.client, this.clientId, channel.id, password);
+      this.currentChannelId = channel.id;
       this.logger.info(
         { channelName, cid: channel.id.toString() },
         "Joined channel"
@@ -391,10 +398,11 @@ export class TS3Client extends EventEmitter {
 
   async getClientsInChannel(): Promise<ClientInfo[]> {
     if (!this.client) return [];
-    const myChannelId = this.client.channelID();
+    const myChannelId = this.getChannelId();
     if (myChannelId === 0n) return [];
+    const myChannelStr = myChannelId.toString();
 
-    if (this.clientId > 0 && !this.visibleClients.has(this.clientId)) {
+    if (this.clientId > 0) {
       this.visibleClients.set(this.clientId, {
         id: this.clientId,
         nickname: this.options.nickname,
@@ -407,7 +415,7 @@ export class TS3Client extends EventEmitter {
 
     const clients: ClientInfo[] = [];
     for (const c of this.visibleClients.values()) {
-      if (c.channelID === myChannelId) {
+      if (c.channelID !== undefined && c.channelID.toString() === myChannelStr) {
         clients.push(c);
       }
     }
@@ -480,8 +488,9 @@ export class TS3Client extends EventEmitter {
 
   /** The current channel ID of this client. */
   getChannelId(): bigint {
+    if (this.currentChannelId !== 0n) return this.currentChannelId;
     if (!this.client) return 0n;
-    return this.client.channelID();
+    return BigInt(this.client.channelID() ?? 0n);
   }
 
   private voiceFramesSent = 0;

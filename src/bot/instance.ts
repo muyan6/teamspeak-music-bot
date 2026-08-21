@@ -525,13 +525,21 @@ export class BotInstance extends EventEmitter {
     if (!this.connected) return;
     try {
       const clients = await this.tsClient.getClientsInChannel();
-      // A 0-length result means the clientlist query failed (the bot is always
-      // in its own channel) — occupancy is unknown, so don't act. Acting on it
-      // would mis-read it as "empty" and falsely auto-pause / idle-disconnect.
       const userCount = occupancyFromClientList(clients.length);
-      if (userCount !== null) this.handleOccupancy(userCount);
-    } catch {
-      // ignore — the 30s poll is the fallback
+      this.logger.info(
+        {
+          channelId: this.tsClient.getChannelId().toString(),
+          clientsInChannel: clients.length,
+          otherUsers: userCount,
+          playerState: this.player.getState(),
+          autoPauseOnEmpty: this.config.autoPauseOnEmpty,
+          autoPaused: this.autoPaused,
+        },
+        "Channel occupancy evaluated"
+      );
+      this.handleOccupancy(userCount);
+    } catch (err) {
+      this.logger.warn({ err }, "refreshOccupancy failed");
     }
   }
 
@@ -613,6 +621,8 @@ export class BotInstance extends EventEmitter {
       }
       this.autoPaused = false;
       this.emit("stateChange");
+    } else if (enabled && this.connected) {
+      void this.refreshOccupancy();
     }
   }
 
@@ -626,12 +636,7 @@ export class BotInstance extends EventEmitter {
     // 每 30 秒检查一次频道人数
     const poll = async () => {
       if (!this.connected) return;
-      try {
-        const clients = await this.tsClient.getClientsInChannel();
-        // null = clientlist query failed (occupancy unknown) → don't act.
-        const userCount = occupancyFromClientList(clients.length);
-        if (userCount !== null) this.handleOccupancy(userCount);
-      } catch { /* ignore */ }
+      void this.refreshOccupancy();
       setTimeout(poll, 30_000);
     };
     setTimeout(poll, 30_000);

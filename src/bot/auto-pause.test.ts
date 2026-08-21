@@ -33,20 +33,16 @@ describe("decideOccupancyAction", () => {
 });
 
 describe("occupancyFromClientList", () => {
-  it("returns null when the query failed (0 clients — bot itself is always present)", () => {
-    // This is the bug fix: a clientlist timeout makes getClientsInChannel()
-    // return [], which must be treated as "unknown", NOT as an empty channel.
-    expect(occupancyFromClientList(0)).toBeNull();
-  });
-  it("returns 0 other users when only the bot is in the channel", () => {
+  it("returns 0 other users when 0 or 1 clients in channel", () => {
+    expect(occupancyFromClientList(0)).toBe(0);
     expect(occupancyFromClientList(1)).toBe(0);
   });
   it("excludes the bot itself from the count", () => {
     expect(occupancyFromClientList(2)).toBe(1);
     expect(occupancyFromClientList(5)).toBe(4);
   });
-  it("never yields a negative count (guards the -1 that caused false pauses)", () => {
-    expect(occupancyFromClientList(-3)).toBeNull();
+  it("never yields a negative count", () => {
+    expect(occupancyFromClientList(-3)).toBe(0);
   });
 });
 

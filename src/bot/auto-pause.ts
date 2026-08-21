@@ -15,9 +15,9 @@ export type OccupancyAction = "pause" | "resume" | "none";
  * return `null` so callers skip the auto-pause/idle decision entirely rather
  * than mis-reading an unknown state as empty.
  */
-export function occupancyFromClientList(clientCount: number): number | null {
-  if (clientCount <= 0) return null; // query failed → occupancy unknown
-  return clientCount - 1; // exclude the bot itself
+export function occupancyFromClientList(clientCount: number): number {
+  if (clientCount <= 0) return 0;
+  return Math.max(0, clientCount - 1); // exclude the bot itself
 }
 
 /**
