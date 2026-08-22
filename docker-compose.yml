@@ -11,11 +11,7 @@ services:
     # ports:
     #   - "3001:3000"
     volumes:
-      - tsmusicbot-custom-data:/app/data
+      - /data/musicbot:/app/data   # 将数据直接保存在宿主机的 /data/musicbot 文件夹
     restart: unless-stopped
     environment:
       - NODE_ENV=production
-
-volumes:
-  tsmusicbot-custom-data:
-    driver: local

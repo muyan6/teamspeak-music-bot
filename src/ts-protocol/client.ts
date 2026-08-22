@@ -293,6 +293,25 @@ export class TS3Client extends EventEmitter {
         if (myCid !== 0n) existing.channelID = myCid;
         this.visibleClients.set(msg.invokerID, existing);
       }
+      if (this.client) {
+        getClientInfo(this.client, msg.invokerID)
+          .then((info) => {
+            if (info && (info.cid || (info as any).client_channel_id)) {
+              const cid = BigInt(info.cid || (info as any).client_channel_id);
+              const existing = this.visibleClients.get(msg.invokerID) ?? {
+                id: msg.invokerID,
+                nickname: msg.invokerName,
+                uid: msg.invokerUID,
+                serverGroups: msg.invokerGroups ?? [],
+                channelID: cid,
+                type: 0,
+              };
+              existing.channelID = cid;
+              this.visibleClients.set(msg.invokerID, existing);
+            }
+          })
+          .catch(() => {});
+      }
       this.emit("textMessage", toTS3TextMessage(msg));
     });
 
@@ -484,6 +503,35 @@ export class TS3Client extends EventEmitter {
     const myChannelId = this.getChannelId();
     if (myChannelId === 0n) return [];
     const myChannelStr = myChannelId.toString();
+
+    try {
+      const resp = await this.client.execCommandWithResponse(
+        `channelclientlist cid=${myChannelStr}`,
+        2000
+      );
+      if (resp && Array.isArray(resp) && resp.length > 0) {
+        const clients: ClientInfo[] = [];
+        for (const item of resp) {
+          const clid = parseInt(item.clid ?? "0", 10);
+          if (clid > 0) {
+            const clientType = parseInt(item.client_type ?? "0", 10);
+            const clientInfo: ClientInfo = {
+              id: clid,
+              nickname: item.client_nickname ?? "",
+              uid: item.client_unique_identifier ?? "",
+              serverGroups: item.client_servergroups ? item.client_servergroups.split(",") : [],
+              channelID: myChannelId,
+              type: clientType,
+            };
+            this.visibleClients.set(clid, clientInfo);
+            clients.push(clientInfo);
+          }
+        }
+        if (clients.length > 0) return clients;
+      }
+    } catch {
+      // Fall through to memory cache if channelclientlist is not supported
+    }
 
     if (this.clientId > 0) {
       this.visibleClients.set(this.clientId, {
