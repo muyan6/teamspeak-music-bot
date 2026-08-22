@@ -199,6 +199,7 @@ export class BotInstance extends EventEmitter {
   private jellyfinReporter: JellyfinPlaybackReporter | null = null;
   /** Debounce handle for the live-queue snapshot writer (Feature 2, #119). */
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoReturnTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: BotInstanceOptions) {
     super();
@@ -577,6 +578,10 @@ export class BotInstance extends EventEmitter {
 
   disconnect(): void {
     this._cancelIdleTimer();
+    if (this.autoReturnTimer) {
+      clearTimeout(this.autoReturnTimer);
+      this.autoReturnTimer = null;
+    }
     this.voiceDucking.reset(true);
     // Cancel any pending live-queue snapshot before clearing so it can't fire
     // afterwards and persist an empty queue over the state we keep for restore
@@ -642,10 +647,40 @@ export class BotInstance extends EventEmitter {
     setTimeout(poll, 30_000);
   }
 
+  async returnToDefaultChannel(): Promise<boolean> {
+    if (this.autoReturnTimer) {
+      clearTimeout(this.autoReturnTimer);
+      this.autoReturnTimer = null;
+    }
+    if (!this.tsClient || this.tsClient.isInDefaultChannel()) return false;
+    const ok = await this.tsClient.returnToDefaultChannel();
+    if (ok) {
+      this.logger.info({ botId: this.id }, "Returned to default channel");
+      void this.refreshOccupancy();
+    }
+    return ok;
+  }
+
   private handleOccupancy(userCount: number): void {
     // idle-disconnect (unchanged behavior)
     if (userCount <= 0) this._scheduleIdleCheck();
     else this._cancelIdleTimer();
+
+    // Auto-return to default channel if room is empty and bot is in a temporary room
+    if (userCount <= 0 && this.tsClient && !this.tsClient.isInDefaultChannel()) {
+      if (!this.autoReturnTimer) {
+        this.autoReturnTimer = setTimeout(() => {
+          this.autoReturnTimer = null;
+          if (this.tsClient && !this.tsClient.isInDefaultChannel()) {
+            void this.returnToDefaultChannel();
+          }
+        }, 2000);
+      }
+    } else if (userCount > 0 && this.autoReturnTimer) {
+      clearTimeout(this.autoReturnTimer);
+      this.autoReturnTimer = null;
+    }
+
     // auto-pause
     const action = decideOccupancyAction(
       this.player.getState(),
@@ -873,6 +908,9 @@ export class BotInstance extends EventEmitter {
         return this.cmdLyrics();
       case "move":
         return this.cmdMove(cmd);
+      case "home":
+      case "default":
+        return this.cmdHome();
       case "follow":
         return this.cmdFollow(msg);
       case "save":
@@ -1709,6 +1747,18 @@ export class BotInstance extends EventEmitter {
     return `Moved to channel: ${cmd.args}`;
   }
 
+  private async cmdHome(): Promise<string> {
+    if (this.tsClient.isInDefaultChannel()) {
+      return "机器人当前已在默认频道";
+    }
+    const ok = await this.returnToDefaultChannel();
+    if (ok) {
+      const target = this.tsClient.getDefaultChannelIdentifier() || "默认频道";
+      return `已返回默认频道: ${target}`;
+    }
+    return "未配置默认频道或返回失败";
+  }
+
   private async cmdFollow(msg?: TS3TextMessage): Promise<string> {
     if (!msg) return "Follow can only be used in TeamSpeak";
     return "Following you to your channel";
@@ -1868,6 +1918,8 @@ export class BotInstance extends EventEmitter {
         : []),
       `${p}vote         — Vote to skip`,
       `${p}lyrics       — Show lyrics`,
+      `${p}move <ch>    — Move bot to channel`,
+      `${p}home         — Return bot to default channel (alias: ${p}default)`,
       `${p}now          — Current song info`,
       `${p}help         — This help message`,
     ].join("\n");

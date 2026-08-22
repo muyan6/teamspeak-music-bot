@@ -108,6 +108,7 @@ export class TS3Client extends EventEmitter {
   private readonly clientUid: string;
   private clientId = 0;
   private currentChannelId: bigint = 0n;
+  private initialDefaultChannelId: bigint = 0n;
   private readonly visibleClients = new Map<number, ClientInfo>();
   private readonly visibleClientUids = new Map<number, string>();
   private readonly visibleClientUidReleaseTimers = new Map<
@@ -433,7 +434,38 @@ export class TS3Client extends EventEmitter {
       );
     }
 
+    this.initialDefaultChannelId = this.currentChannelId;
     this.emit("connected");
+  }
+
+  isInDefaultChannel(): boolean {
+    if (this.initialDefaultChannelId === 0n) return true;
+    return this.currentChannelId === this.initialDefaultChannelId;
+  }
+
+  getDefaultChannelIdentifier(): string {
+    return (
+      this.options.channelId ||
+      this.options.defaultChannel ||
+      (this.initialDefaultChannelId !== 0n ? this.initialDefaultChannelId.toString() : "")
+    );
+  }
+
+  async returnToDefaultChannel(): Promise<boolean> {
+    if (!this.client) return false;
+    if (this.options.channelId) {
+      await this.joinChannel(this.options.channelId, this.options.channelPassword);
+      return true;
+    }
+    if (this.options.defaultChannel) {
+      await this.joinChannel(this.options.defaultChannel, this.options.channelPassword);
+      return true;
+    }
+    if (this.initialDefaultChannelId !== 0n) {
+      await this.joinChannel(this.initialDefaultChannelId.toString(), this.options.channelPassword);
+      return true;
+    }
+    return false;
   }
 
   async joinChannel(channelName: string, password?: string): Promise<void> {

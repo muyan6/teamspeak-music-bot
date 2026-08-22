@@ -3,7 +3,7 @@
 
 services:
   tsmusicbot-custom:
-    image: ghcr.1ms.run/muyan6/teamspeak-music-bot:latest
+    image: ghcr.nju.edu.cn/muyan6/teamspeak-music-bot:latest
     container_name: tsmusicbot-custom
     # 使用 host 网络模式，方便机器人连接部署在同机的 TS3 服务端
     network_mode: host

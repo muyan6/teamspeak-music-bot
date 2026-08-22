@@ -1,4 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
+
+vi.mock("@discordjs/opus", () => ({
+  default: {
+    OpusEncoder: class {
+      encode(pcm: Buffer) { return pcm; }
+      decode(opus: Buffer) { return opus; }
+    },
+  },
+}));
+
 import { EventEmitter } from "node:events";
 import { BotInstance, COMMAND_DENIED_MESSAGE, spotifyPortsForBotId } from "./instance.js";
 import type { BotInstanceOptions } from "./instance.js";
@@ -1533,6 +1543,110 @@ describe("BotInstance live-queue persistence (#119)", () => {
       if (ctx.snapshotTimer) clearTimeout(ctx.snapshotTimer);
       vi.advanceTimersByTime(3000);
       expect(db.getQueueState("bot1")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("BotInstance auto-return to default channel", () => {
+  const handleOccupancy = (BotInstance.prototype as any).handleOccupancy;
+  const cmdHome = (BotInstance.prototype as any).cmdHome;
+
+  function makeReturnCtx(opts: { inDefault: boolean; userCount?: number } = { inDefault: true }) {
+    let inDefault = opts.inDefault;
+    const tsClient = {
+      isInDefaultChannel: vi.fn(() => inDefault),
+      getDefaultChannelIdentifier: vi.fn(() => "Music"),
+      returnToDefaultChannel: vi.fn(async () => {
+        inDefault = true;
+        return true;
+      }),
+    };
+    const player = {
+      getState: vi.fn(() => "playing"),
+      pause: vi.fn(),
+      resume: vi.fn(),
+    };
+    const queue = {
+      current: vi.fn(() => null),
+    };
+    const ctx = {
+      id: "bot1",
+      tsClient,
+      player,
+      queue,
+      config: { autoPauseOnEmpty: true },
+      logger: { info: vi.fn(), warn: vi.fn() },
+      autoReturnTimer: null,
+      autoPaused: false,
+      _scheduleIdleCheck: vi.fn(),
+      _cancelIdleTimer: vi.fn(),
+      refreshOccupancy: vi.fn(async () => {}),
+      emit: vi.fn(),
+      returnToDefaultChannel: (BotInstance.prototype as any).returnToDefaultChannel,
+    };
+    return { ctx, tsClient, player };
+  }
+
+  it("cmdHome replies when already in default channel", async () => {
+    const { ctx, tsClient } = makeReturnCtx({ inDefault: true });
+    const res = await cmdHome.call(ctx);
+    expect(res).toBe("机器人当前已在默认频道");
+    expect(tsClient.returnToDefaultChannel).not.toHaveBeenCalled();
+  });
+
+  it("cmdHome returns to default channel when in a temporary channel", async () => {
+    const { ctx, tsClient } = makeReturnCtx({ inDefault: false });
+    const res = await cmdHome.call(ctx);
+    expect(res).toContain("已返回默认频道: Music");
+    expect(tsClient.returnToDefaultChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("handleOccupancy triggers auto-return when temporary room becomes empty", () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx, tsClient } = makeReturnCtx({ inDefault: false });
+      handleOccupancy.call(ctx, 0);
+      expect(ctx.autoReturnTimer).not.toBeNull();
+      expect(tsClient.returnToDefaultChannel).not.toHaveBeenCalled();
+
+      // After 2s debounce timer, auto-return fires
+      vi.advanceTimersByTime(2500);
+      expect(tsClient.returnToDefaultChannel).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("handleOccupancy cancels auto-return if user enters before debounce timer", () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx, tsClient } = makeReturnCtx({ inDefault: false });
+      handleOccupancy.call(ctx, 0);
+      expect(ctx.autoReturnTimer).not.toBeNull();
+
+      // User arrives 1s later
+      vi.advanceTimersByTime(1000);
+      handleOccupancy.call(ctx, 1);
+      expect(ctx.autoReturnTimer).toBeNull();
+
+      // Advance past the original timer deadline
+      vi.advanceTimersByTime(2000);
+      expect(tsClient.returnToDefaultChannel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("handleOccupancy does not trigger auto-return when already in default channel", () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx, tsClient } = makeReturnCtx({ inDefault: true });
+      handleOccupancy.call(ctx, 0);
+      expect(ctx.autoReturnTimer).toBeNull();
+      vi.advanceTimersByTime(3000);
+      expect(tsClient.returnToDefaultChannel).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
