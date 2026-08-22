@@ -16,7 +16,7 @@ const song = (id: string) => ({
   duration: 1,
 });
 
-function mount(enabled: boolean, opts: { queue?: unknown[] } = {}) {
+function mount(enabled: boolean, opts: { queue?: unknown[]; user?: Record<string, unknown> } = {}) {
   const db = createDatabase(":memory:");
   const loads: Array<{ songs: unknown[]; mode: string; by?: string }> = [];
   const bot = {
@@ -29,7 +29,7 @@ function mount(enabled: boolean, opts: { queue?: unknown[] } = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as unknown as { user: unknown }).user = { id: "u1", username: "alice", role: "member" };
+    (req as unknown as { user: unknown }).user = opts.user ?? { id: "u1", username: "alice", role: "member" };
     next();
   });
   app.use(
@@ -115,5 +115,39 @@ describe("saved-queues router", () => {
     expect((await request(app).delete(`/api/saved-queues/${theirs.id}`)).status).toBe(404);
     expect((await request(app).delete(`/api/saved-queues/${mine.id}`)).status).toBe(200);
     expect(db.getSavedQueue(mine.id)).toBeNull();
+  });
+
+  it("403s when member has no access to target bot", async () => {
+    const { app, db } = mount(true, {
+      user: {
+        id: "u1",
+        username: "alice",
+        role: "member",
+        bots: new Set(["other-bot"]),
+        capabilities: new Set(["player.control", "player.queue"]),
+      },
+    });
+    const saved = db.saveQueue("u1", "mine", [song("a")]);
+    const saveRes = await request(app).post("/api/saved-queues").send({ botId: "b", name: "newq" });
+    expect(saveRes.status).toBe(403);
+    const loadRes = await request(app).post(`/api/saved-queues/${saved.id}/load`).send({ botId: "b" });
+    expect(loadRes.status).toBe(403);
+  });
+
+  it("403s when member lacks required capabilities", async () => {
+    const { app, db } = mount(true, {
+      user: {
+        id: "u1",
+        username: "alice",
+        role: "member",
+        bots: "all",
+        capabilities: new Set([]), // no capabilities
+      },
+    });
+    const saved = db.saveQueue("u1", "mine", [song("a")]);
+    const saveRes = await request(app).post("/api/saved-queues").send({ botId: "b", name: "newq" });
+    expect(saveRes.status).toBe(403);
+    const loadRes = await request(app).post(`/api/saved-queues/${saved.id}/load`).send({ botId: "b" });
+    expect(loadRes.status).toBe(403);
   });
 });

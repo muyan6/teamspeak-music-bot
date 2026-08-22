@@ -1,8 +1,30 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { BotDatabase } from "../../data/database.js";
 import { SHARED_QUEUE_OWNER } from "../../data/database.js";
 import type { BotManager } from "../../bot/manager.js";
 import type { Logger } from "../../logger.js";
+
+function hasBotAccess(user: Request["user"], botId: string): boolean {
+  if (!user) return false;
+  if (user.role === "admin" || user.bots === "all" || !user.bots) return true;
+  return user.bots instanceof Set && user.bots.has(botId);
+}
+
+function canSaveQueue(user: Request["user"]): boolean {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+  if (user.role === "guest") return user.guest?.addToQueue === true;
+  if (!user.capabilities) return true;
+  return user.capabilities.has("player.queue");
+}
+
+function canLoadQueue(user: Request["user"]): boolean {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+  if (user.role === "guest") return user.guest?.playCollection === true || user.guest?.addToQueue === true;
+  if (!user.capabilities) return true;
+  return user.capabilities.has("player.control");
+}
 
 /**
  * The /api/saved-queues router (Feature 1, #119). Named save/load of queues,
@@ -48,6 +70,10 @@ export function createSavedQueuesRouter(
       res.status(400).json({ error: "botId and name are required" });
       return;
     }
+    if (!hasBotAccess(req.user, botId) || !canSaveQueue(req.user)) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
     const bot = botManager.getBot(botId);
     if (!bot) {
       res.status(404).json({ error: "bot not found" });
@@ -83,6 +109,10 @@ export function createSavedQueuesRouter(
     const { botId, mode } = req.body ?? {};
     if (Number.isNaN(id) || typeof botId !== "string" || !botId) {
       res.status(400).json({ error: "invalid id/botId" });
+      return;
+    }
+    if (!hasBotAccess(req.user, botId) || !canLoadQueue(req.user)) {
+      res.status(403).json({ error: "forbidden" });
       return;
     }
     const sq = database.getSavedQueue(id);

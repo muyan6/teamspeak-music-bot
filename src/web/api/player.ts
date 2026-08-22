@@ -633,15 +633,22 @@ export function createPlayerRouter(
       }
 
       const queue = bot.getQueueManager();
-      queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
+      const body = await bot.runExclusive(async () => {
+        const wasIdle = bot.getPlayer().getState() === "idle";
+        queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
 
-      // If nothing is playing, start the first song
-      if (bot.getPlayer().getState() === "idle") {
-        const first = queue.play();
-        if (first) await bot.resolveAndPlay(first);
-      }
+        // If nothing was playing, start this newly-added song immediately.
+        if (wasIdle) {
+          queue.playAt(queue.size() - 1);
+          bot.getPlayer().resetFailures();
+          await bot.resolveAndPlay(queue.current()!);
+          return { message: `Now playing: ${song.name || "Unknown"} - ${song.artist || "Unknown"}` };
+        }
 
-      res.json({ message: `Added: ${song.name} - ${song.artist} (position ${queue.size()})` });
+        return { message: `Added: ${song.name} - ${song.artist} (position ${queue.size()})` };
+      });
+
+      res.json(body);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

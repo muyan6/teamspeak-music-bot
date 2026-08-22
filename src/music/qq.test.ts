@@ -171,4 +171,13 @@ describe("QQMusicProvider.search pagination", () => {
     expect(songCall, "expected a client_search_cp song call").toBeTruthy();
     expect(songCall![1].params.p).toBe(2);
   });
+
+  it("setQuality validates against QQ_QUALITY_LEVELS", () => {
+    const p = new QQMusicProvider("http://x");
+    expect(p.getQuality()).toBe("exhigh");
+    p.setQuality("lossless");
+    expect(p.getQuality()).toBe("lossless");
+    p.setQuality("direct"); // foreign value
+    expect(p.getQuality()).toBe("lossless"); // unchanged
+  });
 });

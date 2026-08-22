@@ -63,6 +63,7 @@ export interface BotInstance {
   name: string;
   serverAddress: string;
   serverPort: number;
+  queryPort?: number;
   nickname: string;
   defaultChannel: string;
   channelId: string;
@@ -162,6 +163,9 @@ function migrateSchema(db: Database.Database): void {
   if (!names.includes("identity")) {
     db.exec("ALTER TABLE bot_instances ADD COLUMN identity TEXT");
   }
+  if (!names.includes("queryPort")) {
+    db.exec("ALTER TABLE bot_instances ADD COLUMN queryPort INTEGER");
+  }
   if (!names.includes("serverProtocol")) {
     db.exec("ALTER TABLE bot_instances ADD COLUMN serverProtocol TEXT NOT NULL DEFAULT ''");
   }
@@ -234,6 +238,7 @@ function initTables(db: Database.Database): void {
       name TEXT NOT NULL,
       serverAddress TEXT NOT NULL,
       serverPort INTEGER NOT NULL,
+      queryPort INTEGER,
       nickname TEXT NOT NULL,
       defaultChannel TEXT NOT NULL,
       channelId TEXT NOT NULL DEFAULT '',
@@ -387,12 +392,13 @@ export function createDatabase(dbPath: string): BotDatabase {
   `);
 
   const upsertInstance = db.prepare(`
-    INSERT INTO bot_instances (id, name, serverAddress, serverPort, nickname, defaultChannel, channelId, channelPassword, autoStart, serverProtocol, ts6ApiKey, serverPassword, identity)
-    VALUES (@id, @name, @serverAddress, @serverPort, @nickname, @defaultChannel, @channelId, @channelPassword, @autoStart, @serverProtocol, @ts6ApiKey, @serverPassword, @identity)
+    INSERT INTO bot_instances (id, name, serverAddress, serverPort, queryPort, nickname, defaultChannel, channelId, channelPassword, autoStart, serverProtocol, ts6ApiKey, serverPassword, identity)
+    VALUES (@id, @name, @serverAddress, @serverPort, @queryPort, @nickname, @defaultChannel, @channelId, @channelPassword, @autoStart, @serverProtocol, @ts6ApiKey, @serverPassword, @identity)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       serverAddress = excluded.serverAddress,
       serverPort = excluded.serverPort,
+      queryPort = excluded.queryPort,
       nickname = excluded.nickname,
       defaultChannel = excluded.defaultChannel,
       channelId = excluded.channelId,
@@ -528,6 +534,7 @@ export function createDatabase(dbPath: string): BotDatabase {
     saveBotInstance(instance) {
       upsertInstance.run({
         ...instance,
+        queryPort: instance.queryPort ?? null,
         autoStart: instance.autoStart ? 1 : 0,
         identity: instance.identity ?? null,
       });
@@ -535,11 +542,16 @@ export function createDatabase(dbPath: string): BotDatabase {
 
     getBotInstances() {
       const rows = selectInstances.all() as Array<
-        Omit<BotInstance, "autoStart" | "identity"> & { autoStart: number; identity: string | null }
+        Omit<BotInstance, "autoStart" | "identity" | "queryPort"> & {
+          autoStart: number;
+          identity: string | null;
+          queryPort: number | null;
+        }
       >;
       return rows.map((r) => ({
         ...r,
         autoStart: r.autoStart === 1,
+        queryPort: r.queryPort ?? undefined,
         serverProtocol: r.serverProtocol ?? "",
         ts6ApiKey: r.ts6ApiKey ?? "",
         serverPassword: r.serverPassword ?? "",

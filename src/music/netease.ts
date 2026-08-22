@@ -120,7 +120,9 @@ export class NeteaseProvider implements MusicProvider {
   }
 
   setQuality(quality: string): void {
-    this.quality = quality;
+    if (NETEASE_QUALITY_LEVELS.some((l) => l.value === quality)) {
+      this.quality = quality;
+    }
   }
 
   getQuality(): string {

@@ -176,6 +176,7 @@ export class BotManager extends EventEmitter {
       name: params.name,
       serverAddress: params.serverAddress,
       serverPort: params.serverPort,
+      queryPort: params.queryPort,
       nickname: params.nickname,
       defaultChannel: params.defaultChannel ?? "",
       channelId: params.channelId ?? "",
@@ -217,6 +218,7 @@ export class BotManager extends EventEmitter {
       name: params.name ?? existing.name,
       serverAddress: params.serverAddress ?? existing.serverAddress,
       serverPort: params.serverPort ?? existing.serverPort,
+      queryPort: params.queryPort ?? existing.queryPort,
       nickname: params.nickname ?? existing.nickname,
       defaultChannel: params.defaultChannel ?? existing.defaultChannel,
       channelId: params.channelId ?? existing.channelId,
@@ -283,7 +285,7 @@ export class BotManager extends EventEmitter {
         tsOptions: {
           host: saved.serverAddress,
           port: saved.serverPort,
-          queryPort: proto === "ts6" ? 10080 : 10011,
+          queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
           nickname: saved.nickname,
           // Reuse the stored identity so server groups assigned to this bot
           // survive restarts — without this the TS server sees a new UID
@@ -345,7 +347,7 @@ export class BotManager extends EventEmitter {
         tsOptions: {
           host: saved.serverAddress,
           port: saved.serverPort,
-          queryPort: proto === "ts6" ? 10080 : 10011,
+          queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
           nickname: saved.nickname,
           identity: saved.identity || undefined,
           defaultChannel: saved.defaultChannel || undefined,

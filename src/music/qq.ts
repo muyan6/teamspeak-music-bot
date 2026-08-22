@@ -99,6 +99,14 @@ function computeGtk(pSkey: string): number {
   return hash & 0x7fffffff;
 }
 
+export const QQ_QUALITY_LEVELS = [
+  { value: "standard", label: "标准 (128kbps)", bitrate: 128 },
+  { value: "higher", label: "较高 (192kbps)", bitrate: 192 },
+  { value: "exhigh", label: "极高 (320kbps)", bitrate: 320 },
+  { value: "lossless", label: "无损 (FLAC)", bitrate: 900 },
+  { value: "hires", label: "Hi-Res", bitrate: 1500 },
+] as const;
+
 export class QQMusicProvider implements MusicProvider {
   readonly platform = "qq" as const;
   private api: AxiosInstance;
@@ -114,7 +122,9 @@ export class QQMusicProvider implements MusicProvider {
   }
 
   setQuality(quality: string): void {
-    this.quality = quality;
+    if (QQ_QUALITY_LEVELS.some((l) => l.value === quality)) {
+      this.quality = quality;
+    }
   }
 
   getQuality(): string {

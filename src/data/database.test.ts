@@ -86,6 +86,7 @@ describe("database", () => {
       name: "Music Bot",
       serverAddress: "localhost",
       serverPort: 9987,
+      queryPort: 10012,
       nickname: "MusicBot",
       defaultChannel: "Music",
       channelId: "",
@@ -100,13 +101,15 @@ describe("database", () => {
     const instances = botDb.getBotInstances();
     expect(instances).toHaveLength(1);
     expect(instances[0]).toMatchObject(instance);
+    expect(instances[0].queryPort).toBe(10012);
     expect(instances[0].autoStart).toBe(true);
 
     // Test upsert
-    botDb.saveBotInstance({ ...instance, nickname: "UpdatedBot", autoStart: false });
+    botDb.saveBotInstance({ ...instance, nickname: "UpdatedBot", autoStart: false, queryPort: 10081 });
     const updated = botDb.getBotInstances();
     expect(updated).toHaveLength(1);
     expect(updated[0].nickname).toBe("UpdatedBot");
+    expect(updated[0].queryPort).toBe(10081);
     expect(updated[0].autoStart).toBe(false);
   });
 

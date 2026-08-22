@@ -384,6 +384,7 @@ export function createBotRouter(
         name,
         serverAddress,
         serverPort,
+        queryPort,
         nickname,
         defaultChannel,
         channelId,
@@ -401,6 +402,7 @@ export function createBotRouter(
         name,
         serverAddress,
         serverPort: serverPort ?? 9987,
+        queryPort: typeof queryPort === "number" ? queryPort : undefined,
         nickname,
         defaultChannel,
         channelId,
@@ -423,10 +425,18 @@ export function createBotRouter(
         res.status(404).json({ error: "Bot not found" });
         return;
       }
-      const { name, serverAddress, serverPort, nickname, defaultChannel, channelId, channelPassword, serverPassword } = req.body;
+      const { name, serverAddress, serverPort, queryPort, nickname, defaultChannel, channelId, channelPassword, serverPassword } = req.body;
       // Update in database
       botManager.updateBot(req.params.id, {
-        name, serverAddress, serverPort, nickname, defaultChannel, channelId, channelPassword, serverPassword,
+        name,
+        serverAddress,
+        serverPort,
+        queryPort: typeof queryPort === "number" ? queryPort : undefined,
+        nickname,
+        defaultChannel,
+        channelId,
+        channelPassword,
+        serverPassword,
       });
       res.json({ success: true });
     } catch (err) {

@@ -138,4 +138,13 @@ describe("NeteaseProvider.search pagination", () => {
     expect(callByType(get, 1000).offset).toBe(0);
     expect(callByType(get, 10).offset).toBe(0);
   });
+
+  it("setQuality validates against NETEASE_QUALITY_LEVELS", () => {
+    const p = new NeteaseProvider("http://x");
+    expect(p.getQuality()).toBe("exhigh");
+    p.setQuality("lossless");
+    expect(p.getQuality()).toBe("lossless");
+    p.setQuality("direct"); // foreign value from jellyfin
+    expect(p.getQuality()).toBe("lossless"); // unchanged
+  });
 });
