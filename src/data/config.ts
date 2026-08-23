@@ -159,6 +159,20 @@ export interface BotConfig {
    */
   enabledProviders: GateableProvider[];
   /**
+   * Enable dynamic loudness normalization (dynaudnorm filter) to prevent
+   * sudden volume jumps between different tracks and platforms. Default true.
+   */
+  loudnessNormalization: boolean;
+  /**
+   * Smooth volume fade-in and fade-out on track start, stop, pause, and seek. Default true.
+   */
+  audioFade: boolean;
+  /**
+   * Automatically search alternative enabled sources if the requested track is
+   * unavailable (VIP preview / copyrighted / geo-blocked). Default true.
+   */
+  autoSourceFallback: boolean;
+  /**
    * Optional operator-chosen default source for commands/REST/WebUI calls that
    * omit a platform (issue #126). When set to an enabled gateable provider it
    * overrides the fixed priority order in defaultPlatform(); `null` (the default)
@@ -192,6 +206,9 @@ export function getDefaultConfig(): BotConfig {
     localAudioEnabled: true,
     savedQueuesEnabled: false,
     playKeepsQueue: false,
+    loudnessNormalization: true,
+    audioFade: true,
+    autoSourceFallback: true,
     publicUrl: "",
     trustProxy: false,
     guestMode: {
@@ -446,6 +463,19 @@ export function loadConfig(path: string): BotConfig {
       jellyfin: coerceQuality(partialAq.jellyfin, defaults.audioQuality.jellyfin),
     };
 
+    const loudnessNormalization =
+      typeof partial.loudnessNormalization === "boolean"
+        ? partial.loudnessNormalization
+        : defaults.loudnessNormalization;
+    const audioFade =
+      typeof partial.audioFade === "boolean"
+        ? partial.audioFade
+        : defaults.audioFade;
+    const autoSourceFallback =
+      typeof partial.autoSourceFallback === "boolean"
+        ? partial.autoSourceFallback
+        : defaults.autoSourceFallback;
+
     return {
       ...defaults,
       ...partial,
@@ -458,6 +488,9 @@ export function loadConfig(path: string): BotConfig {
       savedQueuesEnabled,
       playKeepsQueue,
       voiceDucking,
+      loudnessNormalization,
+      audioFade,
+      autoSourceFallback,
       defaultPlatform: defaultPlatformPref,
     };
   }

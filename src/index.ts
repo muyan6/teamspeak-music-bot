@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, saveConfig, migrateLegacyConfig, isProviderEnabled } from "./data/config.js";
-import { createDatabase } from "./data/database.js";
+import { createDatabase, backupDatabase } from "./data/database.js";
 import { createLogger } from "./logger.js";
 import { createApiServerManager } from "./music/api-server.js";
 import { NeteaseProvider } from "./music/netease.js";
@@ -27,6 +27,7 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const LEGACY_CONFIG_PATH = path.join(ROOT_DIR, "config.json");
 const DB_PATH = path.join(DATA_DIR, "tsmusicbot.db");
+const BACKUP_DIR = path.join(DATA_DIR, "backups");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const COOKIE_DIR = path.join(DATA_DIR, "cookies");
 const AVATAR_DIR = path.join(DATA_DIR, "avatars");
@@ -51,6 +52,17 @@ async function main() {
     logger.error({ reason }, "Unhandled promise rejection");
   });
   const db = createDatabase(DB_PATH);
+
+  // Automated database backup (on startup & every 24h)
+  backupDatabase(db.db, BACKUP_DIR)
+    .then((backupFile) => logger.info({ backupFile }, "Database backup created"))
+    .catch((err) => logger.warn({ err }, "Failed to create database backup"));
+
+  setInterval(() => {
+    backupDatabase(db.db, BACKUP_DIR)
+      .then((backupFile) => logger.info({ backupFile }, "Scheduled database backup created"))
+      .catch((err) => logger.warn({ err }, "Scheduled database backup failed"));
+  }, 24 * 60 * 60 * 1000).unref();
 
   const apiServer = createApiServerManager(
     {

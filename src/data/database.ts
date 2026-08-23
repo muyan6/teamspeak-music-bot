@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import path from "node:path";
 import { CAPABILITIES, BOTS_ALL } from "./permissions.js";
 import { GUEST_USER_ID, GUEST_USERNAME } from "./users.js";
 import type { QueuedSong } from "../audio/queue.js";
@@ -730,3 +732,37 @@ export function createDatabase(dbPath: string): BotDatabase {
     },
   };
 }
+
+export async function backupDatabase(
+  db: Database.Database,
+  backupDir: string,
+  maxBackups = 7,
+): Promise<string> {
+  mkdirSync(backupDir, { recursive: true });
+  const dateStr = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFile = `tsmusicbot_${dateStr}.db`;
+  const targetPath = path.join(backupDir, backupFile);
+
+  await db.backup(targetPath);
+
+  try {
+    const existing = readdirSync(backupDir)
+      .filter((f) => f.startsWith("tsmusicbot_") && f.endsWith(".db"))
+      .sort();
+    while (existing.length > maxBackups) {
+      const oldest = existing.shift();
+      if (oldest) {
+        try {
+          rmSync(path.join(backupDir, oldest), { force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  } catch {
+    /* ignore cleanup errors */
+  }
+
+  return targetPath;
+}
+

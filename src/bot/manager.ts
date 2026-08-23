@@ -337,6 +337,43 @@ export class BotManager extends EventEmitter {
     }
   }
 
+  async batchStartBots(ids: string[]): Promise<{ started: string[]; failed: Array<{ id: string; error: string }> }> {
+    const started: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      try {
+        await this.startBot(id);
+        started.push(id);
+        if (i < ids.length - 1) {
+          // Stagger start slightly to avoid flooding TS server
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      } catch (err) {
+        failed.push({ id, error: (err as Error).message });
+      }
+    }
+
+    return { started, failed };
+  }
+
+  batchStopBots(ids: string[]): { stopped: string[]; failed: Array<{ id: string; error: string }> } {
+    const stopped: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+
+    for (const id of ids) {
+      try {
+        this.stopBot(id);
+        stopped.push(id);
+      } catch (err) {
+        failed.push({ id, error: (err as Error).message });
+      }
+    }
+
+    return { stopped, failed };
+  }
+
   async loadSavedBots(): Promise<void> {
     const savedInstances = this.database.getBotInstances();
     for (const saved of savedInstances) {

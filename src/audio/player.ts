@@ -73,7 +73,11 @@ export function cleanupTempDir(dir: string): void {
   }
 }
 
-export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
+export function buildFfmpegArgs(
+  url: string,
+  seekSeconds: number,
+  options?: { loudnessNormalization?: boolean },
+): string[] {
   const args: string[] = [];
   const isHttp = /^https?:\/\//i.test(url);
 
@@ -104,7 +108,13 @@ export function buildFfmpegArgs(url: string, seekSeconds: number): string[] {
     );
   }
   if (seekSeconds > 0) args.push("-ss", String(seekSeconds));
-  args.push("-i", url, "-f", "s16le", "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le", "-");
+  args.push("-i", url);
+
+  if (options?.loudnessNormalization) {
+    args.push("-af", "dynaudnorm=f=150:g=15:m=10.0:p=0.95");
+  }
+
+  args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le", "-");
 
   return args;
 }
@@ -170,6 +180,12 @@ export class AudioPlayer extends EventEmitter {
   private duckingTargetGain = 1;
   private duckingRampStartedAt = 0;
   private duckingRampDurationMs = 0;
+  private loudnessNormalization = true;
+  private audioFade = true;
+  private fadeRampStartGain = 1;
+  private fadeTargetGain = 1;
+  private fadeRampStartedAt = 0;
+  private fadeRampDurationMs = 0;
   private pcmBuffer: Buffer = Buffer.alloc(0);
   private logger: Logger;
   private frameLoopRunning = false;
@@ -240,12 +256,16 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
+    this.triggerFadeIn(400);
+
     if (shouldUsePowerShellDownload(url)) {
       this.playViaPowerShellDownload(url, seekSeconds, currentSessionId);
       return;
     }
 
-    const args = buildFfmpegArgs(url, seekSeconds);
+    const args = buildFfmpegArgs(url, seekSeconds, {
+      loudnessNormalization: this.loudnessNormalization,
+    });
 
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -374,7 +394,9 @@ export class AudioPlayer extends EventEmitter {
       return;
     }
 
-    const args = buildFfmpegArgs(tempFile, seekSeconds);
+    const args = buildFfmpegArgs(tempFile, seekSeconds, {
+      loudnessNormalization: this.loudnessNormalization,
+    });
     const ffmpegBin = getFfmpegCommand();
     this.ffmpeg = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
@@ -496,6 +518,7 @@ export class AudioPlayer extends EventEmitter {
     // idempotent on a first attach (never-paused/already-flowing) stream.
     readable.resume();
 
+    this.triggerFadeIn(300);
     this.state = "playing";
     this.startFrameLoop();
   }
@@ -745,8 +768,10 @@ export class AudioPlayer extends EventEmitter {
     const now = performance.now();
     const startDuckingGain = this.duckingGainAt(now);
     const endDuckingGain = this.duckingGainAt(now + FRAME_DURATION_MS);
-    const startFactor = baseFactor * startDuckingGain;
-    const endFactor = baseFactor * endDuckingGain;
+    const startFadeGain = this.fadeGainAt(now);
+    const endFadeGain = this.fadeGainAt(now + FRAME_DURATION_MS);
+    const startFactor = baseFactor * startDuckingGain * startFadeGain;
+    const endFactor = baseFactor * endDuckingGain * endFadeGain;
 
     if (startFactor >= 1 && endFactor >= 1) {
       return Buffer.from(pcm);
@@ -789,6 +814,47 @@ export class AudioPlayer extends EventEmitter {
     );
   }
 
+  triggerFadeIn(durationMs = 400): void {
+    if (!this.audioFade) {
+      this.fadeRampStartGain = 1;
+      this.fadeTargetGain = 1;
+      this.fadeRampDurationMs = 0;
+      return;
+    }
+    this.fadeRampStartGain = 0;
+    this.fadeTargetGain = 1;
+    this.fadeRampStartedAt = performance.now();
+    this.fadeRampDurationMs = durationMs;
+  }
+
+  private fadeGainAt(at: number): number {
+    if (this.fadeRampDurationMs <= 0) return this.fadeTargetGain;
+    const progress = Math.max(
+      0,
+      Math.min(1, (at - this.fadeRampStartedAt) / this.fadeRampDurationMs),
+    );
+    return (
+      this.fadeRampStartGain +
+      (this.fadeTargetGain - this.fadeRampStartGain) * progress
+    );
+  }
+
+  setLoudnessNormalization(enabled: boolean): void {
+    this.loudnessNormalization = enabled;
+  }
+
+  getLoudnessNormalization(): boolean {
+    return this.loudnessNormalization;
+  }
+
+  setAudioFade(enabled: boolean): void {
+    this.audioFade = enabled;
+  }
+
+  getAudioFade(): boolean {
+    return this.audioFade;
+  }
+
   // NOTE: in external (Spotify sidecar) mode getElapsed() is frame-count based
   // (framesPlayed includes silence frames emitted on underrun) and therefore
   // only APPROXIMATE — the authoritative position is the controller's live
@@ -804,7 +870,13 @@ export class AudioPlayer extends EventEmitter {
     }
   }
   pause(): void { if (this.state === "playing") this.state = "paused"; }
-  resume(): void { if (this.state === "paused") { this.state = "playing"; this.nextFrameTime = performance.now(); } }
+  resume(): void {
+    if (this.state === "paused") {
+      this.state = "playing";
+      this.nextFrameTime = performance.now();
+      this.triggerFadeIn(300);
+    }
+  }
   resetFailures(): void { this.consecutiveFailures = 0; }
   setVolume(vol: number): void { this.volume = Math.max(0, Math.min(100, vol)); }
   getVolume(): number { return this.volume; }

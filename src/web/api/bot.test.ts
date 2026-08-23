@@ -793,3 +793,80 @@ describe("bot router /settings jellyfin block + enabledProviders", () => {
     expect(config.defaultPlatform).toBeNull();
   });
 });
+
+describe("bot router /batch operations", () => {
+  let botDb: BotDatabase;
+  let tmpDir: string;
+  let config: BotConfig;
+  let configPath: string;
+
+  beforeEach(() => {
+    botDb = createDatabase(":memory:");
+    tmpDir = mkdtempSync(join(tmpdir(), "botbatch-"));
+    configPath = join(tmpDir, "config.json");
+    config = { ...getDefaultConfig() };
+  });
+
+  afterEach(() => {
+    botDb.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("POST /batch/start calls batchStartBots and returns results", async () => {
+    const startedCalls: string[][] = [];
+    const fakeManager = {
+      getAllBots: () => [{ id: "bot-1" }, { id: "bot-2" }],
+      batchStartBots: async (ids: string[]) => {
+        startedCalls.push(ids);
+        return { started: ids, failed: [] };
+      },
+      batchStopBots: (ids: string[]) => ({ stopped: ids, failed: [] }),
+    } as unknown as BotManager;
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.user = { role: "admin", bots: "all" } as any;
+      next();
+    });
+    app.use(
+      "/api/bot",
+      createBotRouter(fakeManager, config, configPath, pino({ level: "silent" }), botDb, createAvatarStore(tmpDir)),
+    );
+
+    const res = await request(app).post("/api/bot/batch/start").send({ ids: ["bot-1", "bot-2"] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.started).toEqual(["bot-1", "bot-2"]);
+    expect(startedCalls).toEqual([["bot-1", "bot-2"]]);
+  });
+
+  it("POST /batch/stop calls batchStopBots and returns results", async () => {
+    const stoppedCalls: string[][] = [];
+    const fakeManager = {
+      getAllBots: () => [{ id: "bot-1" }, { id: "bot-2" }],
+      batchStartBots: async (ids: string[]) => ({ started: ids, failed: [] }),
+      batchStopBots: (ids: string[]) => {
+        stoppedCalls.push(ids);
+        return { stopped: ids, failed: [] };
+      },
+    } as unknown as BotManager;
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.user = { role: "admin", bots: "all" } as any;
+      next();
+    });
+    app.use(
+      "/api/bot",
+      createBotRouter(fakeManager, config, configPath, pino({ level: "silent" }), botDb, createAvatarStore(tmpDir)),
+    );
+
+    const res = await request(app).post("/api/bot/batch/stop").send({ ids: ["bot-1"] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.stopped).toEqual(["bot-1"]);
+    expect(stoppedCalls).toEqual([["bot-1"]]);
+  });
+});

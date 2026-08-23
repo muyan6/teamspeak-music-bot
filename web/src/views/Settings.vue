@@ -53,16 +53,58 @@
     <!-- Bot Management (create/edit/delete/start-stop) requires bot.manage -->
     <section v-if="can('bot.manage')" class="settings-section">
       <h2 class="section-title">机器人管理</h2>
+
+      <!-- Batch Actions Toolbar -->
+      <div v-if="store.bots.length > 0" class="bot-batch-toolbar">
+        <label class="batch-select-all">
+          <input
+            type="checkbox"
+            :checked="isAllSelected"
+            :indeterminate.prop="isPartiallySelected"
+            @change="toggleSelectAll(($event.target as HTMLInputElement).checked)"
+          />
+          <span>全选</span>
+          <span class="batch-count">（已选 {{ selectedBotIds.length }} / {{ store.bots.length }}）</span>
+        </label>
+        <div class="batch-buttons">
+          <button
+            class="btn-sm btn-batch-start"
+            :disabled="selectedBotIds.length === 0 || batchStarting || batchStopping"
+            @click="batchStartSelected"
+          >
+            <Icon icon="mdi:play" />
+            {{ batchStarting ? '开启中…' : '一键开启' }}
+          </button>
+          <button
+            class="btn-sm btn-batch-stop"
+            :disabled="selectedBotIds.length === 0 || batchStarting || batchStopping"
+            @click="batchStopSelected"
+          >
+            <Icon icon="mdi:stop" />
+            {{ batchStopping ? '关闭中…' : '一键关闭' }}
+          </button>
+        </div>
+      </div>
+
       <div class="bot-list">
-        <div v-for="bot in store.bots" :key="bot.id" class="bot-item">
-          <div class="bot-info">
-            <div class="bot-name">{{ bot.name }}</div>
-            <div class="bot-status" :class="botStatusClass(bot)">
-              {{ botStatusText(bot) }}
+        <div v-for="bot in store.bots" :key="bot.id" class="bot-item" :class="{ selected: selectedBotIds.includes(bot.id) }">
+          <div class="bot-left-col">
+            <label class="bot-checkbox-label" @click.stop>
+              <input
+                type="checkbox"
+                :checked="selectedBotIds.includes(bot.id)"
+                @change="toggleBotSelect(bot.id, ($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+            <div class="bot-info">
+              <div class="bot-name">{{ bot.name }}</div>
+              <div class="bot-status" :class="botStatusClass(bot)">
+                {{ botStatusText(bot) }}
+              </div>
             </div>
           </div>
           <div class="bot-actions">
-            <button class="btn-sm" @click="toggleBot(bot.id, bot.connected)">
+            <button class="btn-sm" :disabled="batchStarting || batchStopping" @click="toggleBot(bot.id, bot.connected)">
               {{ bot.connected ? '停止' : '启动' }}
             </button>
             <button class="btn-sm btn-edit" @click="openEditBot(bot)">
@@ -880,6 +922,45 @@
           @change="savePlayKeepsQueue"
         />
       </label>
+
+      <label class="profile-toggle behavior-toggle">
+        <div class="profile-toggle-text">
+          <div class="profile-toggle-label">智能动态音量均衡</div>
+          <div class="profile-toggle-hint">使用 FFmpeg dynaudnorm 滤镜动态平滑不同平台与曲目的音量差异，防止切歌爆音或声音忽大忽小。默认开启。</div>
+        </div>
+        <input
+          v-model="loudnessNormalization"
+          type="checkbox"
+          class="profile-toggle-switch"
+          @change="saveLoudnessNormalization"
+        />
+      </label>
+
+      <label class="profile-toggle behavior-toggle">
+        <div class="profile-toggle-text">
+          <div class="profile-toggle-label">切歌平滑淡入淡出</div>
+          <div class="profile-toggle-hint">起播、切歌、暂停与恢复时应用 300~400ms 音量平滑渐变，告别生硬爆音与突兀断音。默认开启。</div>
+        </div>
+        <input
+          v-model="audioFade"
+          type="checkbox"
+          class="profile-toggle-switch"
+          @change="saveAudioFade"
+        />
+      </label>
+
+      <label class="profile-toggle behavior-toggle">
+        <div class="profile-toggle-text">
+          <div class="profile-toggle-label">无版权 / VIP 灰歌自动备用换源</div>
+          <div class="profile-toggle-hint">当歌曲在原平台无版权、需要 VIP 无法试听完整版时，自动在其他已启用的音源（QQ/网易/酷狗/B站/YouTube）智能检索替代播放。默认开启。</div>
+        </div>
+        <input
+          v-model="autoSourceFallback"
+          type="checkbox"
+          class="profile-toggle-switch"
+          @change="saveAutoSourceFallback"
+        />
+      </label>
     </section>
 
     <!-- Guest Mode (admin only) -->
@@ -1582,10 +1663,69 @@ async function deleteBot(botId: string, botName: string) {
     if (store.activeBotId === botId) {
       store.activeBotId = null;
     }
+    if (selectedBotIds.value.includes(botId)) {
+      selectedBotIds.value = selectedBotIds.value.filter((id) => id !== botId);
+    }
     store.removeBotStatus(botId);
     await store.fetchBots();
   } catch {
     // Ignore
+  }
+}
+
+// Batch bot operations
+const selectedBotIds = ref<string[]>([]);
+const batchStarting = ref(false);
+const batchStopping = ref(false);
+
+const isAllSelected = computed(
+  () => store.bots.length > 0 && selectedBotIds.value.length === store.bots.length,
+);
+const isPartiallySelected = computed(
+  () => selectedBotIds.value.length > 0 && selectedBotIds.value.length < store.bots.length,
+);
+
+function toggleSelectAll(checked: boolean) {
+  if (checked) {
+    selectedBotIds.value = store.bots.map((b) => b.id);
+  } else {
+    selectedBotIds.value = [];
+  }
+}
+
+function toggleBotSelect(id: string, checked: boolean) {
+  if (checked) {
+    if (!selectedBotIds.value.includes(id)) {
+      selectedBotIds.value.push(id);
+    }
+  } else {
+    selectedBotIds.value = selectedBotIds.value.filter((bId) => bId !== id);
+  }
+}
+
+async function batchStartSelected() {
+  if (selectedBotIds.value.length === 0 || batchStarting.value || batchStopping.value) return;
+  batchStarting.value = true;
+  try {
+    await axios.post('/api/bot/batch/start', { ids: selectedBotIds.value });
+    await store.fetchBots();
+  } catch {
+    // Ignore
+  } finally {
+    batchStarting.value = false;
+  }
+}
+
+async function batchStopSelected() {
+  if (selectedBotIds.value.length === 0 || batchStarting.value || batchStopping.value) return;
+  batchStopping.value = true;
+  try {
+    await axios.post('/api/bot/batch/stop', { ids: selectedBotIds.value });
+    await store.fetchBots();
+  } catch {
+    // Ignore
+  } finally {
+    batchStopping.value = false;
   }
 }
 
@@ -1675,6 +1815,9 @@ const localAudioEnabled = ref(true);
 // Saved-queues + play-keeps-queue toggles (#119), both default OFF.
 const savedQueuesEnabled = ref(false);
 const playKeepsQueue = ref(false);
+const loudnessNormalization = ref(true);
+const audioFade = ref(true);
+const autoSourceFallback = ref(true);
 
 function normalizeVoiceDuckingVolume(): number {
   const raw = voiceDuckingVolumePercent.value as number | string;
@@ -1715,6 +1858,9 @@ async function loadIdleTimeout() {
     localAudioEnabled.value = res.data.localAudioEnabled ?? true;
     savedQueuesEnabled.value = res.data.savedQueuesEnabled ?? false;
     playKeepsQueue.value = res.data.playKeepsQueue ?? false;
+    loudnessNormalization.value = res.data.loudnessNormalization ?? true;
+    audioFade.value = res.data.audioFade ?? true;
+    autoSourceFallback.value = res.data.autoSourceFallback ?? true;
     store.savedQueuesEnabled = savedQueuesEnabled.value;
     applyGuestModeFromServer(res.data.guestMode);
     applyAdminGroupsFromServer(res.data.adminGroups);
@@ -1790,6 +1936,27 @@ async function savePlayKeepsQueue() {
   try {
     const res = await axios.post('/api/bot/settings', { playKeepsQueue: playKeepsQueue.value });
     playKeepsQueue.value = res.data.playKeepsQueue ?? playKeepsQueue.value;
+  } catch { /* ignore */ }
+}
+
+async function saveLoudnessNormalization() {
+  try {
+    const res = await axios.post('/api/bot/settings', { loudnessNormalization: loudnessNormalization.value });
+    loudnessNormalization.value = res.data.loudnessNormalization ?? loudnessNormalization.value;
+  } catch { /* ignore */ }
+}
+
+async function saveAudioFade() {
+  try {
+    const res = await axios.post('/api/bot/settings', { audioFade: audioFade.value });
+    audioFade.value = res.data.audioFade ?? audioFade.value;
+  } catch { /* ignore */ }
+}
+
+async function saveAutoSourceFallback() {
+  try {
+    const res = await axios.post('/api/bot/settings', { autoSourceFallback: autoSourceFallback.value });
+    autoSourceFallback.value = res.data.autoSourceFallback ?? autoSourceFallback.value;
   } catch { /* ignore */ }
 }
 
@@ -2435,6 +2602,96 @@ onUnmounted(() => {
 }
 
 // Bot management
+.bot-batch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.batch-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-primary);
+
+  input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--color-primary);
+  }
+}
+
+.batch-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: normal;
+}
+
+.batch-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-batch-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-online);
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+
+  &:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+.btn-batch-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #e26a6a;
+  color: #ffffff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+
+  &:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
 .bot-list {
   display: flex;
   flex-direction: column;
@@ -2447,7 +2704,33 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 12px 16px;
   background: var(--hover-bg);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+
+  &.selected {
+    border-color: var(--color-primary-15);
+    background: var(--color-primary-10);
+  }
+}
+
+.bot-left-col {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bot-checkbox-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+
+  input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--color-primary);
+  }
 }
 
 .bot-info {

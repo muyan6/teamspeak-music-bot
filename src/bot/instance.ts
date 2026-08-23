@@ -17,6 +17,7 @@ import { parseSongRef, parseSelectionIndex } from "./song-ref.js";
 import { splitTextIntoChunks } from "./text-chunk.js";
 import type { Logger } from "../logger.js";
 import { SHARED_QUEUE_OWNER, type BotDatabase, type ProfileConfig, type StoredSong } from "../data/database.js";
+import { LRUCache } from "../data/cache.js";
 import {
   isProviderEnabled,
   defaultPlatform,
@@ -200,6 +201,10 @@ export class BotInstance extends EventEmitter {
   /** Debounce handle for the live-queue snapshot writer (Feature 2, #119). */
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private autoReturnTimer: ReturnType<typeof setTimeout> | null = null;
+  private urlCache = new LRUCache<string, { url: string; trialDuration?: number }>({
+    maxSize: 500,
+    defaultTtlMs: 15 * 60 * 1000,
+  });
 
   constructor(options: BotInstanceOptions) {
     super();
@@ -220,6 +225,8 @@ export class BotInstance extends EventEmitter {
 
     this.tsClient = new TS3Client(options.tsOptions, this.logger);
     this.player = new AudioPlayer(this.logger);
+    this.player.setLoudnessNormalization(this.config.loudnessNormalization !== false);
+    this.player.setAudioFade(this.config.audioFade !== false);
     this.voiceDucking = new VoiceDuckingController(
       this.player,
       this.config.voiceDucking ?? { enabled: false, volumePercent: 30 },
@@ -637,6 +644,16 @@ export class BotInstance extends EventEmitter {
     this.voiceDucking.updateSettings(settings);
   }
 
+  updateLoudnessNormalization(enabled: boolean): void {
+    this.config.loudnessNormalization = enabled;
+    this.player.setLoudnessNormalization(enabled);
+  }
+
+  updateAudioFade(enabled: boolean): void {
+    this.config.audioFade = enabled;
+    this.player.setAudioFade(enabled);
+  }
+
   private _startIdlePoller(): void {
     // 每 30 秒检查一次频道人数
     const poll = async () => {
@@ -989,6 +1006,64 @@ export class BotInstance extends EventEmitter {
     return requestedBy ? { ...song, requestedBy } : { ...song };
   }
 
+  private async fallbackResolveSong(
+    song: QueuedSong,
+  ): Promise<{ url: string; trialDuration?: number } | null> {
+    const candidatePlatforms = (["netease", "qq", "kugou", "bilibili", "youtube"] as const).filter(
+      (p) => p !== song.platform && isProviderEnabled(this.config, p),
+    );
+
+    const query = `${song.name} ${song.artist}`.trim();
+    for (const p of candidatePlatforms) {
+      try {
+        const candidateProvider = this.getProviderFor(p);
+        const searchResults = await candidateProvider.search(query, 1);
+        if (searchResults?.songs && searchResults.songs.length > 0) {
+          const match = searchResults.songs[0];
+          const candidateResult = await candidateProvider.getSongUrl(match.id);
+          if (candidateResult?.url) {
+            this.logger.info(
+              { original: song.platform, fallback: p, song: song.name },
+              "Auto-source fallback succeeded",
+            );
+            await this.tsClient
+              .sendTextMessage(
+                `🔄 [自动换源] 原音源无法播放，已自动切换至 ${p} 播放《${song.name}》`,
+              )
+              .catch(() => {});
+            return {
+              url: candidateResult.url,
+              trialDuration: candidateResult.trialDuration,
+            };
+          }
+        }
+      } catch (err) {
+        this.logger.debug({ err, platform: p }, "Fallback candidate search failed");
+      }
+    }
+    return null;
+  }
+
+  private preFetchNextTrack(): void {
+    const list = this.queue.list();
+    const currentIndex = this.queue.getCurrentIndex();
+    if (currentIndex < 0 || currentIndex + 1 >= list.length) return;
+
+    const nextSong = list[currentIndex + 1];
+    if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") return;
+
+    const cacheKey = `${nextSong.platform}:${nextSong.id}`;
+    if (this.urlCache.has(cacheKey)) return;
+
+    const provider = this.getProviderFor(nextSong.platform);
+    provider.getSongUrl(nextSong.id).then((res) => {
+      if (res?.url) {
+        this.urlCache.set(cacheKey, res);
+        this.logger.debug({ songId: nextSong.id }, "Pre-resolved next track URL");
+      }
+    }).catch(() => {});
+  }
+
   /** Resolve URL for a song and start playing it. Skips to next if URL fails. */
   async resolveAndPlay(song: QueuedSong): Promise<boolean> {
     if (!this.connected) {
@@ -1005,7 +1080,24 @@ export class BotInstance extends EventEmitter {
     this.voteSkipUsers.clear();
     const provider = this.getProviderFor(song.platform);
     try {
-      const result = await provider.getSongUrl(song.id);
+      const cacheKey = `${song.platform}:${song.id}`;
+      let result: { url: string; trialDuration?: number } | null = this.urlCache.get(cacheKey) ?? null;
+
+      if (!result?.url) {
+        result = await provider.getSongUrl(song.id);
+        if (result?.url) {
+          this.urlCache.set(cacheKey, result);
+        }
+      }
+
+      if (!result?.url && this.config.autoSourceFallback !== false && song.platform !== "local") {
+        const fallback = await this.fallbackResolveSong(song);
+        if (fallback) {
+          result = fallback;
+          this.urlCache.set(cacheKey, fallback);
+        }
+      }
+
       if (!result?.url) {
         this.logger.warn({ songId: song.id, name: song.name }, "No URL available, skipping");
         return false;
@@ -1117,6 +1209,7 @@ export class BotInstance extends EventEmitter {
       // 试听片段用试听时长（让 player nearEnd 正确触发自动切歌）；完整曲回退 song.duration
       this.effectiveDuration = result.trialDuration ?? song.duration;
       this.player.play(result.url, 0, this.effectiveDuration);
+      this.preFetchNextTrack();
       // Jellyfin playback reporting: open a session for jellyfin tracks (the
       // reporter closes the previous one itself); close any open session when
       // playback moves to another source. Fire-and-forget — never blocks play.

@@ -75,6 +75,9 @@ export function createBotRouter(
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,
       playKeepsQueue: config.playKeepsQueue,
+      loudnessNormalization: config.loudnessNormalization,
+      audioFade: config.audioFade,
+      autoSourceFallback: config.autoSourceFallback,
       adminGroups: config.adminGroups ?? [],
       guestMode: config.guestMode,
       spotify: maskedSpotify(),
@@ -104,10 +107,17 @@ export function createBotRouter(
 
     const hasAutoPause = typeof autoPauseOnEmpty === "boolean";
     const hasLocalAudioEnabled = typeof localAudioEnabled === "boolean";
+    const hasLoudness = typeof req.body.loudnessNormalization === "boolean";
+    const hasFade = typeof req.body.audioFade === "boolean";
 
     if (hasIdle) config.idleTimeoutMinutes = idleTimeoutMinutes;
     if (hasAutoPause) config.autoPauseOnEmpty = autoPauseOnEmpty;
     if (hasLocalAudioEnabled) config.localAudioEnabled = localAudioEnabled;
+    if (hasLoudness) config.loudnessNormalization = req.body.loudnessNormalization;
+    if (hasFade) config.audioFade = req.body.audioFade;
+    if (typeof req.body.autoSourceFallback === "boolean") {
+      config.autoSourceFallback = req.body.autoSourceFallback;
+    }
 
     // Voice ducking is a partial settings block. Merge only known, strictly
     // valid fields so malformed JSON cannot replace the object or inject NaN /
@@ -274,6 +284,8 @@ export function createBotRouter(
       if (hasIdle) bot.updateIdleTimeout(config.idleTimeoutMinutes);
       if (hasAutoPause) bot.updateAutoPause(config.autoPauseOnEmpty);
       if (hasVoiceDucking) bot.updateVoiceDucking(config.voiceDucking);
+      if (hasLoudness) bot.updateLoudnessNormalization(config.loudnessNormalization);
+      if (hasFade) bot.updateAudioFade(config.audioFade);
     }
 
     res.json({
@@ -283,6 +295,9 @@ export function createBotRouter(
       localAudioEnabled: config.localAudioEnabled,
       savedQueuesEnabled: config.savedQueuesEnabled,
       playKeepsQueue: config.playKeepsQueue,
+      loudnessNormalization: config.loudnessNormalization,
+      audioFade: config.audioFade,
+      autoSourceFallback: config.autoSourceFallback,
       adminGroups: config.adminGroups ?? [],
       guestMode: config.guestMode,
       spotify: maskedSpotify(),
@@ -290,6 +305,52 @@ export function createBotRouter(
       enabledProviders: config.enabledProviders,
       defaultPlatform: config.defaultPlatform,
     });
+  });
+
+  // POST /api/bot/batch/start — 批量启动机器人
+  router.post("/batch/start", requirePermission("bot.manage"), async (req, res) => {
+    try {
+      const u = req.user!;
+      const allBots = botManager.getAllBots();
+      const accessibleIds =
+        u.role === "admin" || u.bots === "all"
+          ? allBots.map((b) => b.id)
+          : allBots.map((b) => b.id).filter((id) => u.bots instanceof Set && u.bots.has(id));
+
+      const reqIds = Array.isArray(req.body?.ids)
+        ? (req.body.ids as unknown[]).filter((id): id is string => typeof id === "string")
+        : accessibleIds;
+
+      const targetIds = reqIds.filter((id) => accessibleIds.includes(id));
+      const result = await botManager.batchStartBots(targetIds);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      logger.error({ err }, "Failed to batch start bots");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /api/bot/batch/stop — 批量停止机器人
+  router.post("/batch/stop", requirePermission("bot.manage"), (req, res) => {
+    try {
+      const u = req.user!;
+      const allBots = botManager.getAllBots();
+      const accessibleIds =
+        u.role === "admin" || u.bots === "all"
+          ? allBots.map((b) => b.id)
+          : allBots.map((b) => b.id).filter((id) => u.bots instanceof Set && u.bots.has(id));
+
+      const reqIds = Array.isArray(req.body?.ids)
+        ? (req.body.ids as unknown[]).filter((id): id is string => typeof id === "string")
+        : accessibleIds;
+
+      const targetIds = reqIds.filter((id) => accessibleIds.includes(id));
+      const result = botManager.batchStopBots(targetIds);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      logger.error({ err }, "Failed to batch stop bots");
+      res.status(500).json({ error: (err as Error).message });
+    }
   });
 
   router.get("/:id", requireBotAccess("id"), (req, res) => {
