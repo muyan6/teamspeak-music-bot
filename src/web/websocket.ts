@@ -60,10 +60,22 @@ export function setupWebSocket(
     });
   });
 
+  const MAX_WS_BUFFERED_AMOUNT = 1024 * 1024; // 1 MB backpressure limit
+
   const broadcast = (data: object, botId?: string) => {
     const message = JSON.stringify(data);
     for (const client of clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.bufferedAmount > MAX_WS_BUFFERED_AMOUNT) {
+        logger.warn("WebSocket client buffer overflow; terminating connection");
+        try {
+          client.terminate();
+        } catch {
+          /* ignore */
+        }
+        clients.delete(client);
+        continue;
+      }
       if (botId !== undefined && !visibleToClient(client, botId)) continue;
       try {
         client.send(message);

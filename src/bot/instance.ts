@@ -1056,11 +1056,7 @@ export class BotInstance extends EventEmitter {
   }
 
   private preFetchNextTrack(): void {
-    const list = this.queue.list();
-    const currentIndex = this.queue.getCurrentIndex();
-    if (currentIndex < 0 || currentIndex + 1 >= list.length) return;
-
-    const nextSong = list[currentIndex + 1];
+    const nextSong = this.queue.peekNext();
     if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") return;
 
     const cacheKey = `${nextSong.platform}:${nextSong.id}`;

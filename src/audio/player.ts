@@ -106,6 +106,8 @@ export function buildFfmpegArgs(
       "-reconnect_delay_max", "30",
       "-reconnect_on_network_error", "1",
       "-reconnect_on_http_error", "4xx,5xx",
+      "-analyzeduration", "1000000",
+      "-probesize", "32768",
     );
   }
   if (seekSeconds > 0) args.push("-ss", String(seekSeconds));
@@ -212,6 +214,8 @@ export class AudioPlayer extends EventEmitter {
   // as dead and advance instead of staying silent forever. Set high so a normal
   // transient underrun never trips it.
   private static readonly MAX_STALL_ATTEMPTS = 3000;
+  private static readonly SILENCE_FRAME = Buffer.alloc(PCM_FRAME_BYTES);
+  private volumeBuffer = Buffer.alloc(PCM_FRAME_BYTES);
   private currentSongDuration = 0; // 当前歌曲总时长（秒）
 
   // --- External PCM mode (Stage 2: go-librespot Spotify sidecar) ---
@@ -657,7 +661,7 @@ export class AudioPlayer extends EventEmitter {
       const elapsed = this.getElapsed();
       const isNearEnd = this.currentSongDuration > 0 
         ? (this.currentSongDuration - elapsed) <= 5 // 距离结尾不足5秒
-        : true; // 未知时长时保守处理
+        : false; // 未知时长或直播流时，不走快速 EOF 逻辑，由长看门狗保护
       
       // External mode: the sidecar PCM stream is continuous and never EOFs per
       // song; a transient underrun must NOT end the track (advance is driven by
@@ -769,7 +773,7 @@ export class AudioPlayer extends EventEmitter {
 
   private emitSilenceFrame(): void {
     try {
-      const opusFrame = this.encoder.encode(Buffer.alloc(PCM_FRAME_BYTES));
+      const opusFrame = this.encoder.encode(AudioPlayer.SILENCE_FRAME);
       this.emit("frame", opusFrame);
       this.framesPlayed++;
     } catch (err) {
@@ -788,10 +792,14 @@ export class AudioPlayer extends EventEmitter {
     const endFactor = baseFactor * endDuckingGain * endFadeGain;
 
     if (startFactor >= 1 && endFactor >= 1) {
-      return Buffer.from(pcm);
+      return pcm;
     }
 
-    const out = Buffer.alloc(pcm.length);
+    if (this.volumeBuffer.length < pcm.length) {
+      this.volumeBuffer = Buffer.alloc(pcm.length);
+    }
+    const out = this.volumeBuffer;
+
     // Most frames are outside the short attack/release windows. Preserve the
     // old constant-factor hot path instead of doing interpolation per sample.
     if (startFactor === endFactor) {
@@ -799,7 +807,7 @@ export class AudioPlayer extends EventEmitter {
         const sample = Math.round(pcm.readInt16LE(i) * startFactor);
         out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i);
       }
-      return out;
+      return out.subarray(0, pcm.length);
     }
 
     // PCM is fixed at stereo s16le. Use one gain for each L/R pair so a ramp
@@ -812,7 +820,7 @@ export class AudioPlayer extends EventEmitter {
       const sample = Math.round(pcm.readInt16LE(i) * factor);
       out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i);
     }
-    return out;
+    return out.subarray(0, pcm.length);
   }
 
   private duckingGainAt(at: number): number {

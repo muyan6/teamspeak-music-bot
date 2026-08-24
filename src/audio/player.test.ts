@@ -3,6 +3,22 @@ import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+
+vi.mock("@discordjs/opus", () => {
+  class OpusEncoder {
+    encode(pcm: Buffer) {
+      return Buffer.alloc(100);
+    }
+    decode(opus: Buffer) {
+      return Buffer.alloc(3840);
+    }
+  }
+  return {
+    default: { OpusEncoder },
+    OpusEncoder,
+  };
+});
+
 import { buildFfmpegArgs, shouldUsePowerShellDownload, cleanupTempDir, shouldEndOnStall, volumeToFactor, AudioPlayer } from "./player.js";
 import type { Logger } from "../logger.js";
 
@@ -242,6 +258,17 @@ describe("AudioPlayer transient ducking gain", () => {
     expect(adjusted.readInt16LE(2)).toBe(3_000);
     expect(player.getVolume()).toBe(100);
     expect(player.getDuckingGain()).toBe(0.3);
+  });
+
+  it("passes input buffer through directly when gain is 1.0 (zero allocation)", () => {
+    const player = new AudioPlayer(silentLogger);
+    player.setVolume(100);
+    player.setDuckingGain(1.0);
+
+    const input = stereoPcm(10_000);
+    const adjusted = applyPlayerVolume(player, input);
+
+    expect(adjusted).toBe(input);
   });
 
   it("multiplies the transient gain by the existing base-volume curve", () => {
@@ -607,7 +634,49 @@ describe("AudioPlayer stall/EOF end-detection is gated on playing state (R3-4)",
       let ended = 0;
       player.on("trackEnd", () => ended++);
 
-      vi.advanceTimersByTime(20 * 300); // cross the 250-tick stall threshold
+      // 300 ticks (~6s) is past MAX_EMPTY_ATTEMPTS (250) but before MAX_STALL_ATTEMPTS (3000):
+      // Unknown-duration stream is not killed prematurely on short buffering.
+      vi.advanceTimersByTime(20 * 300);
+      expect(ended).toBe(0);
+      expect(player.getState()).toBe("playing");
+
+      // Advance past MAX_STALL_ATTEMPTS (3000 ticks ≈ 60s):
+      vi.advanceTimersByTime(20 * 2800);
+
+      expect(ended).toBe(1);
+      expect(player.getState()).toBe("idle");
+      player.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits trackEnd quickly (at MAX_EMPTY_ATTEMPTS) when a stalled stream is near the end", () => {
+    vi.useFakeTimers(FAKE_TIMER_OPTS);
+    try {
+      const player = new AudioPlayer(silentLogger);
+      const p = player as unknown as {
+        ffmpeg: unknown;
+        currentSongDuration: number;
+        pcmBuffer: Buffer;
+        emptyFrameAttempts: number;
+        framesPlayed: number;
+        state: string;
+        startFrameLoop(): void;
+      };
+      p.ffmpeg = { pid: undefined };
+      p.currentSongDuration = 10; // 10s total duration
+      p.framesPlayed = 400; // 8s elapsed, 2s remaining (<= 5s -> isNearEnd is true)
+      p.pcmBuffer = Buffer.alloc(0);
+      p.emptyFrameAttempts = 0;
+      p.state = "playing";
+      p.startFrameLoop();
+
+      let ended = 0;
+      player.on("trackEnd", () => ended++);
+
+      // Near-end EOF: ends quickly at 250 ticks (~5s)
+      vi.advanceTimersByTime(20 * 300);
 
       expect(ended).toBe(1);
       expect(player.getState()).toBe("idle");

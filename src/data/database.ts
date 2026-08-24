@@ -378,6 +378,8 @@ export function ensureGuestUser(db: Database.Database): void {
 export function createDatabase(dbPath: string): BotDatabase {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+  db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   initTables(db);
   migrateSchema(db);

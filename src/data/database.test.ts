@@ -25,6 +25,9 @@ describe("database", () => {
     const names = tables.map((t) => t.name);
     expect(names).toContain("play_history");
     expect(names).toContain("bot_instances");
+
+    const busyTimeout = botDb.db.pragma("busy_timeout", { simple: true });
+    expect(busyTimeout).toBe(5000);
   });
 
   it("creates users and sessions tables on init", () => {

@@ -286,6 +286,38 @@ export class PlayQueue {
     return this.songs[this.currentIndex];
   }
 
+  /** Look ahead at the next song to be played without advancing the queue pointer. */
+  peekNext(): QueuedSong | null {
+    if (this.songs.length === 0) return null;
+    if (this.forwardStack.length > 0) {
+      for (let i = this.forwardStack.length - 1; i >= 0; i--) {
+        const target = this.forwardStack[i];
+        if (target >= 0 && target < this.songs.length && target !== this.currentIndex) {
+          return this.songs[target];
+        }
+      }
+    }
+    if (this.mode === PlayMode.Sequential) {
+      const nextIndex = this.currentIndex + 1;
+      return nextIndex < this.songs.length ? this.songs[nextIndex] : null;
+    }
+    if (this.mode === PlayMode.Loop) {
+      const nextIndex = (this.currentIndex + 1) % this.songs.length;
+      return this.songs[nextIndex] ?? null;
+    }
+    if (this.mode === PlayMode.Random || this.mode === PlayMode.RandomLoop) {
+      const unplayed = this.songs.map((_, i) => i).filter((i) => !this.playedIndices.has(i) && i !== this.currentIndex);
+      if (unplayed.length > 0) {
+        return this.songs[unplayed[0]];
+      }
+      if (this.mode === PlayMode.RandomLoop && this.songs.length > 0) {
+        const candidates = this.songs.map((_, i) => i).filter((i) => i !== this.currentIndex);
+        return candidates.length > 0 ? this.songs[candidates[0]] : this.songs[0];
+      }
+    }
+    return null;
+  }
+
   list(): QueuedSong[] {
     return [...this.songs];
   }
