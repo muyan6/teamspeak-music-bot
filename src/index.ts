@@ -44,12 +44,22 @@ async function main() {
 
   const logger = createLogger(LOG_DIR);
 
-  // Prevent unhandled errors from crashing the process
+  // An uncaught exception leaves shared clients and queues in an unknown state.
+  // Record it, then terminate so the service manager can restart a clean process
+  // instead of keeping a half-functional bot alive.
+  let fatalExitScheduled = false;
+  const scheduleFatalExit = (message: string, fields: Record<string, unknown>) => {
+    if (fatalExitScheduled) return;
+    fatalExitScheduled = true;
+    logger.error(fields, message);
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 100).unref();
+  };
   process.on("uncaughtException", (err) => {
-    logger.error({ err }, "Uncaught exception");
+    scheduleFatalExit("Uncaught exception", { err });
   });
   process.on("unhandledRejection", (reason) => {
-    logger.error({ reason }, "Unhandled promise rejection");
+    scheduleFatalExit("Unhandled promise rejection", { reason });
   });
   const db = createDatabase(DB_PATH);
 

@@ -78,6 +78,15 @@ sudo cp -r "$PROJECT_DIR/scripts/"* "$INSTALL_DIR/scripts/" 2>/dev/null || true
 # Create data directory
 sudo mkdir -p "$INSTALL_DIR/data"
 
+# Run the service as a dedicated unprivileged account. The directory is owned by
+# that account because the bot writes config, database, cookies, logs and media
+# below the install root at runtime.
+if ! id -u "$SERVICE_NAME" >/dev/null 2>&1; then
+    NOLOGIN_SHELL="$(command -v nologin || echo /usr/sbin/nologin)"
+    sudo useradd --system --home-dir "$INSTALL_DIR" --shell "$NOLOGIN_SHELL" "$SERVICE_NAME"
+fi
+sudo chown -R "$SERVICE_NAME:$SERVICE_NAME" "$INSTALL_DIR"
+
 echo "[6/6] Creating systemd service..."
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOL
 [Unit]
@@ -86,12 +95,18 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_NAME}
+Group=${SERVICE_NAME}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=/usr/bin/node ${INSTALL_DIR}/dist/index.js
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=${INSTALL_DIR}
 
 [Install]
 WantedBy=multi-user.target

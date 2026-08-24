@@ -14,8 +14,8 @@
     "prestart": "node scripts/check-native.mjs",
     "start": "node dist/index.js",
     "play": "node dist/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --exclude dist/** --exclude web/dist/**",
+    "test:watch": "vitest --exclude dist/** --exclude web/dist/**"
   },
   "license": "MIT",
   "dependencies": {

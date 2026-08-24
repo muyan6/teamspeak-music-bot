@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { BotManager } from "../../bot/manager.js";
 import type { BotDatabase } from "../../data/database.js";
-import type { MusicProvider } from "../../music/provider.js";
+import type { MusicProvider, Platform } from "../../music/provider.js";
 import type { Logger } from "../../logger.js";
 import { parseCommand } from "../../bot/commands.js";
 import { requireBotAccess } from "../middleware/requirePermission.js";
@@ -34,12 +34,48 @@ export function createPlayerRouter(
     next();
   });
 
+  const SUPPORTED_PLATFORMS = new Set<Platform>([
+    "netease",
+    "qq",
+    "bilibili",
+    "youtube",
+    "local",
+    "kugou",
+    "spotify",
+    "jellyfin",
+  ]);
+
+  function selectPlatform(bot: any, platform: unknown, res: any): Platform | null {
+    const requested = platform === undefined || platform === null || platform === ""
+      ? undefined
+      : platform;
+    if (requested !== undefined && (typeof requested !== "string" || !SUPPORTED_PLATFORMS.has(requested as Platform))) {
+      res.status(400).json({ error: "invalid platform" });
+      return null;
+    }
+    try {
+      const selected = (requested as Platform | undefined) ?? bot.getDefaultPlatform();
+      bot.assertProviderEnabled(selected);
+      return selected;
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return null;
+    }
+  }
+
+  function providerForRequest(bot: any, platform: unknown, res: any): MusicProvider | null {
+    const selected = selectPlatform(bot, platform, res);
+    return selected ? bot.getProviderFor(selected) : null;
+  }
+
   /** Map API platform string to the corresponding command flag. */
   const platformFlag = (platform: unknown): string => {
     if (platform === "bilibili") return "-b";
     if (platform === "qq") return "-q";
     if (platform === "youtube") return "-y";
     if (platform === "kugou") return "-k";
+    if (platform === "local") return "-l";
+    if (platform === "spotify") return "-s";
     if (platform === "jellyfin") return "-j";
     // The flag-less default is now the configured default platform (jellyfin
     // unless disabled), so netease needs an explicit flag.
@@ -70,6 +106,7 @@ export function createPlayerRouter(
         res.status(400).json({ error: "query is required" });
         return;
       }
+      if (selectPlatform(bot, platform, res) === null) return;
       const cmd = parseCommand(`!play ${platformFlag(platform)} ${query}`.trim(), "!");
       if (!cmd) {
         res.status(400).json({ error: "Invalid command" });
@@ -86,6 +123,11 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { query, platform } = req.body;
+      if (!query) {
+        res.status(400).json({ error: "query is required" });
+        return;
+      }
+      if (selectPlatform(bot, platform, res) === null) return;
       const cmd = parseCommand(`!add ${platformFlag(platform)} ${query}`.trim(), "!");
       if (!cmd) {
         res.status(400).json({ error: "Invalid command" });
@@ -120,15 +162,13 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { platform } = req.body;
+      const selectedPlatform = selectPlatform(bot, platform, res);
+      if (selectedPlatform === null) return;
       if (isLocalAudioDisabled(bot, platform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
-      const provider = bot.getProviderFor(
-        platform === "bilibili" || platform === "qq" || platform === "youtube" || platform === "local" || platform === "kugou" || platform === "jellyfin"
-          ? platform
-          : "netease"
-      );
+      const provider = bot.getProviderFor(selectedPlatform);
       const message = await bot.startFm(provider, requesterName(req));
       res.json({
         ok:
@@ -276,6 +316,11 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { playlistId, platform } = req.body;
+      if (!playlistId || typeof playlistId !== "string") {
+        res.status(400).json({ error: "playlistId is required" });
+        return;
+      }
+      if (selectPlatform(bot, platform, res) === null) return;
       const cmd = parseCommand(
         `!playlist ${platformFlag(platform)} ${playlistId}`.trim(),
         "!"
@@ -293,21 +338,17 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { playlistId, platform } = req.body;
+      if (!playlistId || typeof playlistId !== "string") {
+        res.status(400).json({ error: "playlistId is required" });
+        return;
+      }
+      const selectedPlatform = selectPlatform(bot, platform, res);
+      if (selectedPlatform === null) return;
       if (isLocalAudioDisabled(bot, platform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
-      // Use the bot's own provider lookup — it already knows about youtube,
-      // which the router's constructor params did not.
-      const provider = bot.getProviderFor(
-        platform === "bilibili" || platform === "qq" || platform === "youtube" || platform === "local" || platform === "kugou" || platform === "jellyfin"
-          ? platform
-          : "netease"
-      );
-
-      // Stop current playback
-      bot.getPlayer().stop();
-      bot.getPlayer().resetFailures();
+      const provider = bot.getProviderFor(selectedPlatform);
 
       const songs = await provider.getPlaylistSongs(playlistId);
       if (songs.length === 0) {
@@ -338,42 +379,34 @@ export function createPlayerRouter(
         return;
       }
 
-      const queue = bot.getQueueManager();
-      queue.clear();
-      for (const song of queueable) {
-        queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
-      }
-      // Sweep AFTER the queue is rebuilt: the previous queue's local uploads are
-      // released and deleted, but an empty/failed playlist (early return above)
-      // leaves the previous queue — and its files — intact.
-      bot.cleanupQueuedLocalSongs?.("queue_replaced");
-
-      // Use queue.play() for sequential, or pick random index for random modes
-      const mode = queue.getMode();
-      let first;
-      if (mode === "random" || mode === "rloop") {
-        const idx = Math.floor(Math.random() * queue.size());
-        first = queue.playAt(idx);
-      } else {
-        first = queue.play();
-      }
-
-      // If the first picked song can't resolve (e.g., QQ song with no
-      // streaming entitlement → result 104003), fall back to playNext's
-      // retry-skip behavior. Use a higher retry budget than the default
-      // trackEnd auto-advance because user-initiated playlist plays
-      // commonly have long contiguous runs of unplayable songs.
-      let started = first ? await bot.resolveAndPlay(first) : false;
-      if (first && !started) {
-        started = await bot.playNext(20);
-      }
-
-      const playing = queue.current();
       const loadedMsg = queueable.length < totalCount
         ? `已加载 ${queueable.length}/${totalCount} 首（其余区域/版权限制）`
         : `已加载 ${queueable.length} 首`;
-      if (started && playing) {
-        res.json({ ok: true, message: `${loadedMsg}，正在播放：${playing.name}` });
+      const result = await bot.runExclusive(async () => {
+        bot.getPlayer().stop();
+        bot.getPlayer().resetFailures();
+        const queue = bot.getQueueManager();
+        queue.clear();
+        for (const song of queueable) {
+          queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
+        }
+        bot.cleanupQueuedLocalSongs?.("queue_replaced");
+
+        const mode = queue.getMode();
+        let first;
+        if (mode === "random" || mode === "rloop") {
+          const idx = Math.floor(Math.random() * queue.size());
+          first = queue.playAt(idx);
+        } else {
+          first = queue.play();
+        }
+
+        let started = first ? await bot.resolveAndPlay(first) : false;
+        if (first && !started) started = await bot.playNext(20);
+        return { started, playing: queue.current() };
+      });
+      if (result.started && result.playing) {
+        res.json({ ok: true, message: `${loadedMsg}，正在播放：${result.playing.name}` });
       } else {
         res.json({ ok: false, message: `${loadedMsg}，但无法开始播放。` });
       }
@@ -388,19 +421,17 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { albumId, platform } = req.body;
+      if (!albumId || typeof albumId !== "string") {
+        res.status(400).json({ error: "albumId is required" });
+        return;
+      }
+      const selectedPlatform = selectPlatform(bot, platform, res);
+      if (selectedPlatform === null) return;
       if (isLocalAudioDisabled(bot, platform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
-      const provider = bot.getProviderFor(
-        platform === "bilibili" || platform === "qq" || platform === "youtube" || platform === "local" || platform === "kugou" || platform === "jellyfin"
-          ? platform
-          : "netease"
-      );
-
-      // Stop current playback
-      bot.getPlayer().stop();
-      bot.getPlayer().resetFailures();
+      const provider = bot.getProviderFor(selectedPlatform);
 
       const songs = await provider.getAlbumSongs(albumId);
       if (songs.length === 0) {
@@ -424,34 +455,34 @@ export function createPlayerRouter(
         return;
       }
 
-      const queue = bot.getQueueManager();
-      queue.clear();
-      for (const song of queueable) {
-        queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
-      }
-      // Sweep AFTER the queue is rebuilt (see play-playlist).
-      bot.cleanupQueuedLocalSongs?.("queue_replaced");
-
-      const mode = queue.getMode();
-      let first;
-      if (mode === "random" || mode === "rloop") {
-        const idx = Math.floor(Math.random() * queue.size());
-        first = queue.playAt(idx);
-      } else {
-        first = queue.play();
-      }
-
-      let started = first ? await bot.resolveAndPlay(first) : false;
-      if (first && !started) {
-        started = await bot.playNext(20);
-      }
-
-      const playing = queue.current();
       const loadedMsg = queueable.length < totalCount
         ? `已加载 ${queueable.length}/${totalCount} 首（其余区域/版权限制）`
         : `已加载 ${queueable.length} 首`;
-      if (started && playing) {
-        res.json({ ok: true, message: `${loadedMsg}，正在播放：${playing.name}` });
+      const result = await bot.runExclusive(async () => {
+        bot.getPlayer().stop();
+        bot.getPlayer().resetFailures();
+        const queue = bot.getQueueManager();
+        queue.clear();
+        for (const song of queueable) {
+          queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
+        }
+        bot.cleanupQueuedLocalSongs?.("queue_replaced");
+
+        const mode = queue.getMode();
+        let first;
+        if (mode === "random" || mode === "rloop") {
+          const idx = Math.floor(Math.random() * queue.size());
+          first = queue.playAt(idx);
+        } else {
+          first = queue.play();
+        }
+
+        let started = first ? await bot.resolveAndPlay(first) : false;
+        if (first && !started) started = await bot.playNext(20);
+        return { started, playing: queue.current() };
+      });
+      if (result.started && result.playing) {
+        res.json({ ok: true, message: `${loadedMsg}，正在播放：${result.playing.name}` });
       } else {
         res.json({ ok: false, message: `${loadedMsg}，但无法开始播放。` });
       }
@@ -466,6 +497,38 @@ export function createPlayerRouter(
   // insert-and-jump, keeping the queue) lives in one place shared with chat
   // !play. Serialized via runExclusive like /play-now-song so concurrent
   // requests can't interleave the queue mutation + playback (#119).
+  router.post("/:botId/play-by-id", authorize({ capability: "player.control" }), async (req, res) => {
+    try {
+      const bot = (req as any).bot;
+      const { songId, platform } = req.body;
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const selectedPlatform = selectPlatform(bot, platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
+        rejectDisabledLocalAudio(res);
+        return;
+      }
+      const provider = bot.getProviderFor(selectedPlatform);
+      const song = await provider.getSongDetail(songId);
+      if (!song) {
+        res.status(404).json({ error: "Song not found" });
+        return;
+      }
+      const body = await bot.runExclusive(async () => {
+        const ok = await bot.playSingleSong({ ...song, platform: selectedPlatform }, requesterName(req));
+        return ok
+          ? { ok: true, message: `正在播放：${song.name || songId} - ${song.artist || ""}` }
+          : { ok: false, message: `无法播放「${song.name || songId}」（区域/版权限制）` };
+      });
+      res.json(body);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.post("/:botId/play-song", authorize({ capability: "player.control" }), async (req, res) => {
     try {
       const bot = (req as any).bot;
@@ -474,7 +537,9 @@ export function createPlayerRouter(
         res.status(400).json({ error: "song object with id and platform is required" });
         return;
       }
-      if (isLocalAudioDisabled(bot, song.platform)) {
+      const selectedPlatform = selectPlatform(bot, song.platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
@@ -482,7 +547,7 @@ export function createPlayerRouter(
       // clear branch — do NOT also call it here, or it would delete retained
       // local uploads in keep-queue mode.
       const body = await bot.runExclusive(async () => {
-        const ok = await bot.playSingleSong({ ...song }, requesterName(req));
+        const ok = await bot.playSingleSong({ ...song, platform: selectedPlatform }, requesterName(req));
         return ok
           ? { ok: true, message: `正在播放：${song.name || 'Unknown'} - ${song.artist || 'Unknown'}` }
           : { ok: false, message: `无法播放「${song.name || song.id}」（区域/版权限制）` };
@@ -503,7 +568,9 @@ export function createPlayerRouter(
         res.status(400).json({ error: "song object with id and platform is required" });
         return;
       }
-      if (isLocalAudioDisabled(bot, song.platform)) {
+      const selectedPlatform = selectPlatform(bot, song.platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
@@ -519,7 +586,7 @@ export function createPlayerRouter(
         // after natural track end without queue.clear()).
         const insertedAt =
           queue.getCurrentIndex() < 0 ? queue.size() : queue.getCurrentIndex() + 1;
-        queue.addNext({ ...song, requestedBy: requesterName(req) });
+        queue.addNext({ ...song, platform: selectedPlatform, requestedBy: requesterName(req) });
 
         if (wasIdle) {
           // Promote the just-added song to current and start it.
@@ -551,7 +618,9 @@ export function createPlayerRouter(
         res.status(400).json({ error: "song object with id and platform is required" });
         return;
       }
-      if (isLocalAudioDisabled(bot, song.platform)) {
+      const selectedPlatform = selectPlatform(bot, song.platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
@@ -561,7 +630,7 @@ export function createPlayerRouter(
         const queue = bot.getQueueManager();
         const insertedAt =
           queue.getCurrentIndex() < 0 ? queue.size() : queue.getCurrentIndex() + 1;
-        queue.addNext({ ...song, requestedBy: requesterName(req) });
+        queue.addNext({ ...song, platform: selectedPlatform, requestedBy: requesterName(req) });
         queue.playAt(insertedAt);
         bot.getPlayer().resetFailures();
         const ok = await bot.resolveAndPlay(queue.current()!);
@@ -584,7 +653,9 @@ export function createPlayerRouter(
         res.status(400).json({ error: "song object with id and platform is required" });
         return;
       }
-      if (isLocalAudioDisabled(bot, song.platform)) {
+      const selectedPlatform = selectPlatform(bot, song.platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
@@ -593,7 +664,7 @@ export function createPlayerRouter(
       const body = await bot.runExclusive(async () => {
         const queue = bot.getQueueManager();
         const wasIdle = bot.getPlayer().getState() === "idle";
-        queue.add({ ...song, requestedBy: requesterName(req) });
+        queue.add({ ...song, platform: selectedPlatform, requestedBy: requesterName(req) });
 
         // If nothing was playing, start this newly-added song immediately.
         if (wasIdle) {
@@ -616,15 +687,17 @@ export function createPlayerRouter(
     try {
       const bot = (req as any).bot;
       const { songId, platform } = req.body;
-      if (isLocalAudioDisabled(bot, platform)) {
+      if (!songId || typeof songId !== "string") {
+        res.status(400).json({ error: "songId is required" });
+        return;
+      }
+      const selectedPlatform = selectPlatform(bot, platform, res);
+      if (selectedPlatform === null) return;
+      if (isLocalAudioDisabled(bot, selectedPlatform)) {
         rejectDisabledLocalAudio(res);
         return;
       }
-      const provider = bot.getProviderFor(
-        platform === "bilibili" || platform === "qq" || platform === "youtube" || platform === "local" || platform === "kugou" || platform === "jellyfin"
-          ? platform
-          : "netease"
-      );
+      const provider = bot.getProviderFor(selectedPlatform);
 
       const song = await provider.getSongDetail(songId);
       if (!song) {
@@ -635,7 +708,7 @@ export function createPlayerRouter(
       const queue = bot.getQueueManager();
       const body = await bot.runExclusive(async () => {
         const wasIdle = bot.getPlayer().getState() === "idle";
-        queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
+        queue.add({ ...song, platform: selectedPlatform, requestedBy: requesterName(req) });
 
         // If nothing was playing, start this newly-added song immediately.
         if (wasIdle) {

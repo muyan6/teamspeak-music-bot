@@ -8,6 +8,7 @@ import type { AvatarStore } from "../../data/avatars.js";
 import { requirePermission, requireBotAccess } from "../middleware/requirePermission.js";
 import { requireNotGuest } from "../middleware/requireNotGuest.js";
 import { GUEST_PERMISSION_FLAGS } from "../../data/permissions.js";
+import type { ServerProtocol } from "../../ts-protocol/client.js";
 
 export function createBotRouter(
   botManager: BotManager,
@@ -372,7 +373,7 @@ export function createBotRouter(
     // Never expose the TS identity / API key to the client; the edit form only
     // consumes channel/server passwords.
     const { ts6ApiKey: _ts6ApiKey, identity: _identity, ...safe } = saved as unknown as Record<string, unknown>;
-    res.json(safe);
+    res.json({ ...safe, hasTs6ApiKey: Boolean(saved.ts6ApiKey) });
   });
 
   router.get("/:id/avatar", requirePermission("bot.manage"), requireBotAccess("id"), (req, res) => {
@@ -452,6 +453,8 @@ export function createBotRouter(
         channelPassword,
         serverPassword,
         autoStart,
+        serverProtocol,
+        ts6ApiKey,
       } = req.body;
       if (!name || !serverAddress || !nickname) {
         res
@@ -459,17 +462,33 @@ export function createBotRouter(
           .json({ error: "name, serverAddress, and nickname are required" });
         return;
       }
+      const normalizedProtocol: ServerProtocol | "" | undefined =
+        serverProtocol === "ts3" || serverProtocol === "ts6"
+          ? serverProtocol
+          : serverProtocol === ""
+            ? ""
+            : undefined;
+      const normalizedQueryPort =
+        typeof queryPort === "number" && Number.isInteger(queryPort) && queryPort > 0 && queryPort <= 65_535
+          ? queryPort
+          : undefined;
+      if (queryPort !== undefined && normalizedQueryPort === undefined) {
+        res.status(400).json({ error: "queryPort must be an integer between 1 and 65535" });
+        return;
+      }
       const bot = await botManager.createBot({
         name,
         serverAddress,
         serverPort: serverPort ?? 9987,
-        queryPort: typeof queryPort === "number" ? queryPort : undefined,
+        queryPort: normalizedQueryPort,
         nickname,
         defaultChannel,
         channelId,
         channelPassword,
         serverPassword,
         autoStart: autoStart ?? false,
+        serverProtocol: normalizedProtocol,
+        ts6ApiKey: typeof ts6ApiKey === "string" && ts6ApiKey.length > 0 ? ts6ApiKey : undefined,
       });
       res.status(201).json(bot.getStatus());
     } catch (err) {
@@ -486,18 +505,46 @@ export function createBotRouter(
         res.status(404).json({ error: "Bot not found" });
         return;
       }
-      const { name, serverAddress, serverPort, queryPort, nickname, defaultChannel, channelId, channelPassword, serverPassword } = req.body;
-      // Update in database
-      botManager.updateBot(req.params.id, {
+      const {
         name,
         serverAddress,
         serverPort,
-        queryPort: typeof queryPort === "number" ? queryPort : undefined,
+        queryPort,
         nickname,
         defaultChannel,
         channelId,
         channelPassword,
         serverPassword,
+        serverProtocol,
+        ts6ApiKey,
+      } = req.body;
+      const normalizedQueryPort =
+        typeof queryPort === "number" && Number.isInteger(queryPort) && queryPort > 0 && queryPort <= 65_535
+          ? queryPort
+          : undefined;
+      if (queryPort !== undefined && normalizedQueryPort === undefined) {
+        res.status(400).json({ error: "queryPort must be an integer between 1 and 65535" });
+        return;
+      }
+      const normalizedProtocol: ServerProtocol | "" | undefined =
+        serverProtocol === "ts3" || serverProtocol === "ts6"
+          ? serverProtocol
+          : serverProtocol === ""
+            ? ""
+            : undefined;
+      // Update in database
+      botManager.updateBot(req.params.id, {
+        name,
+        serverAddress,
+        serverPort,
+        queryPort: normalizedQueryPort,
+        nickname,
+        defaultChannel,
+        channelId,
+        channelPassword,
+        serverPassword,
+        serverProtocol: normalizedProtocol,
+        ts6ApiKey: typeof ts6ApiKey === "string" && ts6ApiKey.length > 0 ? ts6ApiKey : undefined,
       });
       res.json({ success: true });
     } catch (err) {

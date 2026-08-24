@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   BotInstance,
   type BotInstanceOptions,
+  spotifyPortsForBotId,
 } from "./instance.js";
 import type { MusicProvider } from "../music/provider.js";
 import { YouTubeProvider } from "../music/youtube.js";
@@ -64,7 +65,7 @@ export interface CreateBotParams {
   channelPassword?: string;
   autoStart?: boolean;
   /** Force TS3 or TS6 protocol; omit or "unknown" for auto-detect. */
-  serverProtocol?: ServerProtocol;
+  serverProtocol?: ServerProtocol | "";
   /** API key for TS6 HTTP Query (port 10080/10443). */
   ts6ApiKey?: string;
   /** Password required to join the TS server. */
@@ -90,6 +91,10 @@ export class BotManager extends EventEmitter {
   private avatarStore: AvatarStore;
   private permissions: PermissionStore;
   private configPath: string;
+  private readonly spotifyPortAllocations = new Map<
+    string,
+    ReturnType<typeof spotifyPortsForBotId>
+  >();
 
   constructor(
     neteaseProvider: MusicProvider,
@@ -135,6 +140,7 @@ export class BotManager extends EventEmitter {
 
   async createBot(params: CreateBotParams): Promise<BotInstance> {
     const id = crypto.randomUUID();
+    const spotifyPorts = this.allocateSpotifyPorts(id);
 
     const bot = new BotInstance({
       id,
@@ -148,7 +154,9 @@ export class BotManager extends EventEmitter {
         channelId: params.channelId,
         channelPassword: params.channelPassword,
         serverPassword: params.serverPassword,
-        serverProtocol: params.serverProtocol,
+        serverProtocol: params.serverProtocol === "ts3" || params.serverProtocol === "ts6"
+          ? params.serverProtocol
+          : undefined,
         ts6ApiKey: params.ts6ApiKey,
       },
       neteaseProvider: this.neteaseProvider,
@@ -166,6 +174,7 @@ export class BotManager extends EventEmitter {
       managedVoiceClients: this.managedVoiceClients,
       spotifyDataDir: this.spotifyDataDir,
       spotifyOAuth: this.spotifyOAuth,
+      spotifyPorts,
     });
 
     this.bots.set(id, bot);
@@ -197,6 +206,7 @@ export class BotManager extends EventEmitter {
       bot.disconnect();
       this.bots.delete(id);
     }
+    this.spotifyPortAllocations.delete(id);
     this.database.deleteBotInstance(id);
     this.permissions.pruneBot(id);
     // Prune the deleted bot from the guest scope allow-list (mirrors permissions.pruneBot).
@@ -313,6 +323,7 @@ export class BotManager extends EventEmitter {
         managedVoiceClients: this.managedVoiceClients,
         spotifyDataDir: this.spotifyDataDir,
         spotifyOAuth: this.spotifyOAuth,
+        spotifyPorts: this.allocateSpotifyPorts(id),
       });
       this.bots.set(id, bot);
       this.emit("botInstance", bot);
@@ -409,6 +420,7 @@ export class BotManager extends EventEmitter {
         managedVoiceClients: this.managedVoiceClients,
         spotifyDataDir: this.spotifyDataDir,
         spotifyOAuth: this.spotifyOAuth,
+        spotifyPorts: this.allocateSpotifyPorts(saved.id),
       });
 
       this.bots.set(saved.id, bot);
@@ -416,19 +428,20 @@ export class BotManager extends EventEmitter {
 
       // Only auto-connect bots that have autoStart enabled
       if (saved.autoStart) {
-        bot.connect().then(() => {
-          // Persist identity after successful connection for future restarts
+        try {
+          await connectWithTimeout(bot, 15_000, this.logger);
+          // Persist identity after successful connection for future restarts.
           this.persistBotIdentity(saved, bot);
           this.logger.info(
             { botId: saved.id, name: saved.name },
-            "Auto-connected saved bot"
+            "Auto-connected saved bot",
           );
-        }).catch((err) => {
+        } catch (err) {
           this.logger.error(
             { err, botId: saved.id, name: saved.name },
-            "Failed to auto-connect bot (start manually from Settings)"
+            "Failed to auto-connect bot (start manually from Settings)",
           );
-        });
+        }
 
         // Stagger connections to avoid overwhelming the TS server
         await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -453,10 +466,43 @@ export class BotManager extends EventEmitter {
     }
   }
 
+  /**
+   * Keep Spotify sidecar ports unique inside this Node process. The stable hash
+   * remains the starting point so a single bot keeps the same ports across
+   * restarts, while collisions are resolved by the manager instead of making
+   * the second bot permanently unusable.
+   */
+  private allocateSpotifyPorts(id: string): ReturnType<typeof spotifyPortsForBotId> {
+    const existing = this.spotifyPortAllocations.get(id);
+    if (existing) return existing;
+
+    const base = spotifyPortsForBotId(id);
+    const used = new Set<number>();
+    for (const ports of this.spotifyPortAllocations.values()) {
+      used.add(ports.apiPort);
+      used.add(ports.callbackPort);
+    }
+
+    let apiPort = base.apiPort;
+    let callbackPort = base.callbackPort;
+    while (used.has(apiPort) || used.has(callbackPort)) {
+      apiPort++;
+      callbackPort++;
+      if (callbackPort > 65_535) {
+        throw new Error("No free Spotify sidecar port pair is available");
+      }
+    }
+
+    const allocated = { apiPort, callbackPort };
+    this.spotifyPortAllocations.set(id, allocated);
+    return allocated;
+  }
+
   shutdown(): void {
     for (const bot of this.bots.values()) {
       bot.disconnect();
     }
     this.bots.clear();
+    this.spotifyPortAllocations.clear();
   }
 }

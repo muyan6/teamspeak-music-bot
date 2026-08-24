@@ -83,14 +83,9 @@ function stableHash(s: string): number {
  * restarts. The two ranges (37xx / 87xx) are disjoint so a single bot's API and
  * callback ports never clash with each other.
  *
- * NOTE: the hash (`% 1000`) only REDUCES collisions between bots — it does NOT
- * guarantee uniqueness. Two Spotify-enabled bots whose ids collide mod 1000
- * (birthday-bound: likely well below 1000 bots) get IDENTICAL ports; the second
- * bot's go-librespot sidecar then fails to bind 127.0.0.1:<apiPort>, start()
- * throws, and that bot's Spotify stays permanently unavailable. Proper fix (out
- * of scope here): assign each Spotify-enabled bot a unique free port —
- * manager-coordinated allocation or bind-retry on EADDRINUSE — instead of a
- * pure hash.
+ * BotManager uses this stable pair as the starting point for a process-wide
+ * allocator. Directly constructed BotInstance objects (for example in tests)
+ * still get deterministic ports from this helper.
  */
 export function spotifyPortsForBotId(id: string): { apiPort: number; callbackPort: number } {
   const off = stableHash(id) % 1000;
@@ -120,6 +115,8 @@ export interface BotInstanceOptions {
   /** Process-wide shared Spotify OAuth (single account); injected into the
    *  SpotifyController so web-login authorization is visible to playback (C3.1). */
   spotifyOAuth?: SpotifyOAuth;
+  /** Optional manager-assigned ports; omitted callers use spotifyPortsForBotId. */
+  spotifyPorts?: { apiPort: number; callbackPort: number };
   /** Test seam: build a fake controller instead of a real go-librespot one. */
   spotifyControllerFactory?: (o: {
     config: SpotifyConfig;
@@ -268,11 +265,10 @@ export class BotInstance extends EventEmitter {
     const spotifyWorkDir = path.join(spotifyBase, this.id, "work");
     const spotifyConfigDir = path.join(spotifyBase, this.id, "config");
     // Stable per-bot ports for the go-librespot control API / OAuth callback.
-    // These only reduce (not eliminate) cross-bot collisions: two bot ids that
-    // hash to the same % 1000 bucket share ports and the second sidecar fails to
-    // bind — see spotifyPortsForBotId() for the recommended per-bot free-port fix.
+    // BotManager resolves in-process collisions; direct/test construction falls
+    // back to the deterministic helper for backwards compatibility.
     const { apiPort: spotifyApiPort, callbackPort: spotifyCallbackPort } =
-      spotifyPortsForBotId(this.id);
+      options.spotifyPorts ?? spotifyPortsForBotId(this.id);
     const buildController =
       options.spotifyControllerFactory ??
       ((o) => new SpotifyController({ ...o }));
@@ -855,6 +851,14 @@ export class BotInstance extends EventEmitter {
     msg?: TS3TextMessage,
     requesterName = this.requesterNameFromMessage(msg),
   ): Promise<string | null> {
+    return this.runExclusive(() => this.executeCommandInternal(cmd, msg, requesterName));
+  }
+
+  private async executeCommandInternal(
+    cmd: ParsedCommand,
+    msg?: TS3TextMessage,
+    requesterName?: string,
+  ): Promise<string | null> {
     // Reject commands that would push audio when the bot isn't connected:
     // otherwise ffmpeg spawns and voice goes to a half-initialized or
     // torn-down TS client, leaving player.state="playing" on a disconnected
@@ -953,6 +957,12 @@ export class BotInstance extends EventEmitter {
     return platform === "qq" ? this.qqProvider : this.neteaseProvider;
   }
 
+  getDefaultPlatform(): Platform {
+    const platform = defaultPlatform(this.config);
+    this.assertProviderEnabled(platform);
+    return platform;
+  }
+
   /** Friendly gate for user-selected platforms (flags / URLs / REST params). */
   assertProviderEnabled(platform: Platform): void {
     if (!isProviderEnabled(this.config, platform)) {
@@ -977,6 +987,7 @@ export class BotInstance extends EventEmitter {
     ["y", "youtube"],
     ["k", "kugou"],
     ["s", "spotify"],
+    ["l", "local"],
     ["n", "netease"],
     ["j", "jellyfin"],
   ];
@@ -1074,6 +1085,9 @@ export class BotInstance extends EventEmitter {
       this.logger.warn({ songId: song.id, name: song.name }, "Local audio playback disabled — refusing track");
       return false;
     }
+    // Keep lightweight test doubles and older integrations usable; real
+    // BotInstance instances always provide this gate.
+    this.assertProviderEnabled?.(song.platform);
     // Clear any accumulated skip votes — every fresh track starts with a
     // clean slate, regardless of which code path loaded it (cmdPlay,
     // cmdPlaylist, cmdAlbum, cmdFm, trackEnd auto-advance, etc.).
@@ -1081,12 +1095,12 @@ export class BotInstance extends EventEmitter {
     const provider = this.getProviderFor(song.platform);
     try {
       const cacheKey = `${song.platform}:${song.id}`;
-      let result: { url: string; trialDuration?: number } | null = this.urlCache.get(cacheKey) ?? null;
+      let result: { url: string; trialDuration?: number } | null = this.urlCache?.get(cacheKey) ?? null;
 
       if (!result?.url) {
         result = await provider.getSongUrl(song.id);
         if (result?.url) {
-          this.urlCache.set(cacheKey, result);
+          this.urlCache?.set(cacheKey, result);
         }
       }
 
@@ -1094,7 +1108,7 @@ export class BotInstance extends EventEmitter {
         const fallback = await this.fallbackResolveSong(song);
         if (fallback) {
           result = fallback;
-          this.urlCache.set(cacheKey, fallback);
+          this.urlCache?.set(cacheKey, fallback);
         }
       }
 
@@ -1145,10 +1159,6 @@ export class BotInstance extends EventEmitter {
         // (so NO player.stop() here). On the gapless auto-advance path the
         // player is still attached (isExternalActive() === true) so we do NOT
         // re-attach — the sidecar rolls the SAME FIFO into the next track.
-        // KNOWN LIMITATION: on a gapless spotify->spotify advance the player's
-        // frame counter is not reset, so player.getElapsed() over-reads for the
-        // 2nd+ consecutive Spotify track. Cosmetic only — the authoritative
-        // elapsed shown to users is status.track.position from the backend poll.
         if (!this.player.isExternalActive()) {
           this.player.playPcmStream(this.spotifyController.getPcmStream(), {
             // The sidecar PCM pipe is long-lived; per-track end arrives via the
@@ -1177,6 +1187,9 @@ export class BotInstance extends EventEmitter {
           // spotify→spotify handoff is unaffected.
           this.player.resume();
         }
+        // The PCM stream is continuous, but elapsed is per-track. Reset the
+        // local frame clock on every Spotify handoff, including gapless ones.
+        this.player.resetTrackElapsed?.(song.duration);
         this.currentSourceIsSpotify = true;
         this.jellyfinReporter?.onStop();
         song.url = result.url;
@@ -1209,7 +1222,7 @@ export class BotInstance extends EventEmitter {
       // 试听片段用试听时长（让 player nearEnd 正确触发自动切歌）；完整曲回退 song.duration
       this.effectiveDuration = result.trialDuration ?? song.duration;
       this.player.play(result.url, 0, this.effectiveDuration);
-      this.preFetchNextTrack();
+      this.preFetchNextTrack?.();
       // Jellyfin playback reporting: open a session for jellyfin tracks (the
       // reporter closes the previous one itself); close any open session when
       // playback moves to another source. Fire-and-forget — never blocks play.

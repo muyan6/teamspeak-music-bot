@@ -290,8 +290,14 @@ export function createWebServer(options: WebServerOptions): WebServer {
 
   return {
     async start(): Promise<void> {
-      return new Promise((resolve) => {
-        server.listen(options.port, () => {
+      if (server.listening) return;
+      return new Promise((resolve, reject) => {
+        const onError = (err: Error) => {
+          server.removeListener("listening", onListening);
+          reject(err);
+        };
+        const onListening = () => {
+          server.removeListener("error", onError);
           logger.info({ port: options.port }, "Web server started");
           cleanupTimer = setInterval(() => {
             try {
@@ -301,7 +307,16 @@ export function createWebServer(options: WebServerOptions): WebServer {
             }
           }, SESSION_CLEANUP_INTERVAL_MS);
           resolve();
-        });
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        try {
+          server.listen(options.port);
+        } catch (err) {
+          server.removeListener("error", onError);
+          server.removeListener("listening", onListening);
+          reject(err);
+        }
       });
     },
     stop(): void {

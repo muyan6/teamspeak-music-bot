@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN mkdir -p /app/bin
 
 # Install backend dependencies
 COPY package*.json ./
@@ -46,6 +47,7 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/web/dist ./web/dist
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/bin ./bin
 # package.json declares a `prestart` preflight, so `npm start` inside the
 # container needs this file. The image's own CMD calls node directly and never
 # goes through npm, but an interactive `docker exec ... npm start` would
@@ -60,6 +62,6 @@ EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD node -e "fetch('http://localhost:3000/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+    CMD node -e "const fs=require('node:fs');let p=3000;try{const c=JSON.parse(fs.readFileSync('/app/data/config.json','utf8'));if(Number.isInteger(c.webPort)&&c.webPort>0&&c.webPort<65536)p=c.webPort}catch{}fetch('http://127.0.0.1:'+p+'/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
 
 CMD ["node", "dist/index.js"]

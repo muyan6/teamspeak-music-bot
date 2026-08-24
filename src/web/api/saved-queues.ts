@@ -126,7 +126,17 @@ export function createSavedQueuesRouter(
       return;
     }
     const loadMode = mode === "append" ? "append" : "replace";
-    await bot.loadSavedQueue(sq.songs, loadMode, username || "游客");
+    const runExclusive = (bot as unknown as {
+      runExclusive?: <T>(task: () => Promise<T>) => Promise<T>;
+    }).runExclusive;
+    const load = async () => {
+      await bot.loadSavedQueue(sq.songs, loadMode, username || "游客");
+    };
+    if (runExclusive) {
+      await runExclusive.call(bot, load);
+    } else {
+      await load();
+    }
     res.json({ ok: true, loaded: sq.songs.length, mode: loadMode });
   });
 

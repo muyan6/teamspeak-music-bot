@@ -317,7 +317,7 @@ async function deleteUser(u: any) {
 async function loadAuditLogs() {
   loadingLogs.value = true;
   try {
-    const res = await axios.get('/api/audit-logs');
+    const res = await axios.get('/api/audit');
     auditLogs.value = res.data?.logs || [];
   } catch { /* ignore */ }
   finally {

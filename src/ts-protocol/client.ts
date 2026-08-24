@@ -171,11 +171,19 @@ export class TS3Client extends EventEmitter {
       );
     } else {
       this.logger.info({ addr }, "Detecting server protocol (TS3/TS6)...");
+      // The default installation exposes TS3 Query on 10011 and TS6 HTTP
+      // Query on 10080. A user-supplied queryPort is different: probe that
+      // same port as both protocols so non-default deployments are detected.
+      const queryPort = this.options.queryPort;
+      const detectionPorts =
+        queryPort === 10011 || queryPort === 10080
+          ? { ts3QueryPort: 10011, ts6HttpPort: 10080 }
+          : { ts3QueryPort: queryPort, ts6HttpPort: queryPort };
       const detection = await detectServerProtocol(
         this.options.host,
         this.options.port,
         3000,
-        { ts3QueryPort: 10011, ts6HttpPort: 10080 },
+        detectionPorts,
       );
       this.detectedProtocol = detection.protocol;
       if (this.detectedProtocol === "unknown") {

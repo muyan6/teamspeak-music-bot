@@ -87,6 +87,20 @@
             <input v-model="editForm.nickname" class="input" />
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label>Query 端口</label>
+            <input v-model.number="editForm.queryPort" type="number" class="input" placeholder="TS3 10011 / TS6 10080" />
+          </div>
+          <div class="form-group" style="flex:1">
+            <label>服务器协议</label>
+            <select v-model="editForm.serverProtocol" class="select">
+              <option value="">自动检测</option>
+              <option value="ts3">TS3</option>
+              <option value="ts6">TS6</option>
+            </select>
+          </div>
+        </div>
         <div class="form-group">
           <label>默认频道名称（可选）</label>
           <input v-model="editForm.defaultChannel" :disabled="!!editForm.channelId" class="input" :class="{ disabled: !!editForm.channelId }" placeholder="音乐频道" />
@@ -102,6 +116,11 @@
         <div class="form-group">
           <label>服务器密码（可选）</label>
           <input v-model="editForm.serverPassword" type="password" class="input" />
+        </div>
+        <div class="form-group">
+          <label>TS6 API Key（可选）</label>
+          <input v-model="editForm.ts6ApiKey" type="password" class="input" placeholder="留空保持现有 Key" />
+          <small v-if="editForm.hasTs6ApiKey" class="edit-avatar-hint">当前已保存 API Key</small>
         </div>
 
         <div class="form-group">
@@ -146,6 +165,20 @@
       </div>
       <div class="form-row">
         <div class="form-group">
+          <label>Query 端口</label>
+          <input v-model.number="newBotQueryPort" type="number" class="input" placeholder="TS3 10011 / TS6 10080" />
+        </div>
+        <div class="form-group">
+          <label>服务器协议</label>
+          <select v-model="newBotServerProtocol" class="select">
+            <option value="">自动检测</option>
+            <option value="ts3">TS3</option>
+            <option value="ts6">TS6</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
           <label>默认频道名称（可选）</label>
           <input v-model="newBotChannel" :disabled="!!newBotChannelId" class="input" :class="{ disabled: !!newBotChannelId }" placeholder="留空默认大厅" />
         </div>
@@ -163,6 +196,10 @@
           <label>服务器密码（可选）</label>
           <input v-model="newBotServerPassword" type="password" class="input" placeholder="无密码请留空" />
         </div>
+      </div>
+      <div class="form-group">
+        <label>TS6 API Key（可选）</label>
+        <input v-model="newBotTs6ApiKey" type="password" class="input" placeholder="TS6 HTTP Query 使用" />
       </div>
       <div class="form-group">
         <label>机器人头像（可选）</label>
@@ -190,11 +227,14 @@ const { can } = session;
 const newBotName = ref('');
 const newBotServer = ref('');
 const newBotPort = ref(9987);
+const newBotQueryPort = ref<number | undefined>(undefined);
+const newBotServerProtocol = ref('');
 const newBotNickname = ref('MusicBot');
 const newBotChannel = ref('');
 const newBotChannelId = ref('');
 const newBotChannelPassword = ref('');
 const newBotServerPassword = ref('');
+const newBotTs6ApiKey = ref('');
 const newBotAvatar = ref<string | null>(null);
 
 // Bot edit
@@ -203,11 +243,15 @@ const editForm = reactive({
   name: '',
   serverAddress: '',
   serverPort: 9987,
+  queryPort: undefined as number | undefined,
+  serverProtocol: '',
   nickname: '',
   defaultChannel: '',
   channelId: '',
   channelPassword: '',
   serverPassword: '',
+  ts6ApiKey: '',
+  hasTs6ApiKey: false,
 });
 
 // Batch bot operations
@@ -273,19 +317,29 @@ async function openEditBot(bot: any) {
     const res = await axios.get(`/api/bot/${bot.id}/config`);
     editForm.serverAddress = res.data.serverAddress ?? '';
     editForm.serverPort = res.data.serverPort ?? 9987;
+    editForm.queryPort = res.data.queryPort ?? undefined;
+    editForm.serverProtocol = res.data.serverProtocol === 'ts3' || res.data.serverProtocol === 'ts6'
+      ? res.data.serverProtocol
+      : '';
     editForm.nickname = res.data.nickname ?? '';
     editForm.defaultChannel = res.data.defaultChannel ?? '';
     editForm.channelId = res.data.channelId ?? '';
     editForm.channelPassword = res.data.channelPassword ?? '';
     editForm.serverPassword = res.data.serverPassword ?? '';
+    editForm.ts6ApiKey = '';
+    editForm.hasTs6ApiKey = Boolean(res.data.hasTs6ApiKey);
   } catch {
     editForm.serverAddress = '';
     editForm.serverPort = 9987;
+    editForm.queryPort = undefined;
+    editForm.serverProtocol = '';
     editForm.nickname = bot.name;
     editForm.defaultChannel = '';
     editForm.channelId = '';
     editForm.channelPassword = '';
     editForm.serverPassword = '';
+    editForm.ts6ApiKey = '';
+    editForm.hasTs6ApiKey = false;
   }
 }
 
@@ -336,11 +390,14 @@ async function createBot() {
       name: newBotName.value,
       serverAddress: newBotServer.value,
       serverPort: newBotPort.value,
+      queryPort: newBotQueryPort.value,
+      serverProtocol: newBotServerProtocol.value || undefined,
       nickname: newBotNickname.value,
       defaultChannel: newBotChannel.value || undefined,
       channelId: newBotChannelId.value || undefined,
       channelPassword: newBotChannelPassword.value || undefined,
       serverPassword: newBotServerPassword.value || undefined,
+      ts6ApiKey: newBotTs6ApiKey.value || undefined,
     });
     if (newBotAvatar.value) {
       try {
@@ -352,11 +409,14 @@ async function createBot() {
     newBotName.value = '';
     newBotServer.value = '';
     newBotPort.value = 9987;
+    newBotQueryPort.value = undefined;
+    newBotServerProtocol.value = '';
     newBotNickname.value = 'MusicBot';
     newBotChannel.value = '';
     newBotChannelId.value = '';
     newBotChannelPassword.value = '';
     newBotServerPassword.value = '';
+    newBotTs6ApiKey.value = '';
     newBotAvatar.value = null;
     await store.fetchBots();
   } catch {

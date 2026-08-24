@@ -54,6 +54,7 @@ export function getFfmpegCommand(): string {
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const POWERSHELL_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Old jdymusic CDN paths (e.g. /jdymusic/obj/...) RST direct Node-stack
 // requests on Windows; same URL works when fetched via WinHTTP. Empirically,
@@ -319,10 +320,15 @@ export class AudioPlayer extends EventEmitter {
     const psScript = [
       "$ErrorActionPreference = 'Stop'",
       "$ProgressPreference = 'SilentlyContinue'",
-      "$wc = New-Object System.Net.WebClient",
-      "$wc.Headers.Add('User-Agent', $env:DL_UA)",
-      "$wc.Headers.Add('Referer', $env:DL_REFERER)",
-      "$wc.DownloadFile($env:DL_URL, $env:DL_OUT)",
+      "$client = New-Object System.Net.Http.HttpClient",
+      "$client.Timeout = [TimeSpan]::FromMinutes(10)",
+      "$client.DefaultRequestHeaders.TryAddWithoutValidation('User-Agent', $env:DL_UA)",
+      "$client.DefaultRequestHeaders.TryAddWithoutValidation('Referer', $env:DL_REFERER)",
+      "$response = $client.GetAsync($env:DL_URL, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()",
+      "$response.EnsureSuccessStatusCode()",
+      "$sourceStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()",
+      "$output = [System.IO.File]::Create($env:DL_OUT)",
+      "try { $sourceStream.CopyTo($output) } finally { $output.Dispose(); $sourceStream.Dispose(); $response.Dispose(); $client.Dispose() }",
     ].join("; ");
 
     this.logger.debug({ sessionId, tempFile }, "Downloading via PowerShell (jdymusic CDN)");
@@ -342,6 +348,12 @@ export class AudioPlayer extends EventEmitter {
       },
     );
     this.downloader = ps;
+    const downloadTimeout = setTimeout(() => {
+      if (this.sessionId !== sessionId) return;
+      this.logger.warn({ sessionId, timeoutMs: POWERSHELL_DOWNLOAD_TIMEOUT_MS }, "PowerShell download timed out");
+      try { ps.kill("SIGTERM"); } catch { /* already gone */ }
+    }, POWERSHELL_DOWNLOAD_TIMEOUT_MS);
+    downloadTimeout.unref();
 
     let stderrTail = "";
     ps.stderr!.on("data", (chunk: Buffer) => {
@@ -349,6 +361,7 @@ export class AudioPlayer extends EventEmitter {
     });
 
     ps.on("exit", (code, signal) => {
+      clearTimeout(downloadTimeout);
       if (this.sessionId !== sessionId) {
         cleanupTempDir(tempDir);
         return;
@@ -368,6 +381,7 @@ export class AudioPlayer extends EventEmitter {
     });
 
     ps.on("error", (err) => {
+      clearTimeout(downloadTimeout);
       if (this.sessionId !== sessionId) return;
       this.downloader = null;
       this.spawnFailed = true;
@@ -860,6 +874,14 @@ export class AudioPlayer extends EventEmitter {
   // only APPROXIMATE — the authoritative position is the controller's live
   // status.track.position. This approximation is acceptable for Spotify.
   getElapsed(): number { return this.seekOffset + (this.framesPlayed * FRAME_DURATION_MS) / 1000; }
+  /** Start the elapsed clock for a new track without detaching an external stream. */
+  resetTrackElapsed(songDuration = 0, seekSeconds = 0): void {
+    this.framesPlayed = 0;
+    this.seekOffset = Math.max(0, Number.isFinite(seekSeconds) ? seekSeconds : 0);
+    this.currentSongDuration = Math.max(0, Number.isFinite(songDuration) ? songDuration : 0);
+    this.emptyFrameAttempts = 0;
+    this.healthyFrames = 0;
+  }
   seek(seconds: number): void {
     // External (Spotify sidecar) mode: local seek is a no-op. Respawning ffmpeg
     // on the spotify: sentinel would collide with the continuous PCM source;

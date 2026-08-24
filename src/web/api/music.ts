@@ -15,6 +15,8 @@ import { authorize } from "../middleware/authorize.js";
  * survives to disk.
  */
 export const LOCAL_UPLOAD_LIMIT = "500mb";
+/** Keep concurrent raw-body buffers bounded across slow disk/ffmpeg uploads. */
+export const LOCAL_UPLOAD_MAX_CONCURRENCY = 2;
 
 /**
  * Body parser for the local-upload route.
@@ -73,6 +75,25 @@ export function createMusicRouter(
 ): Router {
   const router = Router();
   const youtubeProvider: MusicProvider = new YouTubeProvider();
+  let activeLocalUploads = 0;
+
+  const reserveLocalUploadSlot: express.RequestHandler = (_req, res, next) => {
+    if (activeLocalUploads >= LOCAL_UPLOAD_MAX_CONCURRENCY) {
+      res.status(503).json({ error: "本地上传繁忙，请稍后重试" });
+      return;
+    }
+
+    activeLocalUploads++;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      activeLocalUploads = Math.max(0, activeLocalUploads - 1);
+    };
+    res.once("finish", release);
+    res.once("close", release);
+    next();
+  };
 
   function isLocalAudioEnabled(): boolean {
     return config?.localAudioEnabled !== false;
@@ -115,6 +136,7 @@ export function createMusicRouter(
       }
       next();
     },
+    reserveLocalUploadSlot,
     localUploadBody,
     async (req, res) => {
       try {
