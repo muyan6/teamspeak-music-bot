@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
+import dgram from "node:dgram";
 import {
   Client as TS3FullClient,
   generateIdentity as genTS3Identity,
@@ -160,7 +161,33 @@ export class TS3Client extends EventEmitter {
       this.clientId = 0;
     }
 
-    const addr = `${this.options.host}:${this.options.port}`;
+    let parsedHost = (this.options.host ?? "").trim();
+    let parsedPort = this.options.port;
+    if (parsedHost.startsWith("[")) {
+      const closing = parsedHost.indexOf("]");
+      if (closing > 0) {
+        if (parsedHost[closing + 1] === ":") {
+          const rawP = parseInt(parsedHost.slice(closing + 2), 10);
+          if (Number.isInteger(rawP) && rawP > 0 && rawP <= 65535) {
+            parsedPort = rawP;
+          }
+        }
+        parsedHost = parsedHost.slice(1, closing);
+      }
+    } else if (parsedHost.includes(":")) {
+      const parts = parsedHost.split(":");
+      if (parts.length === 2) {
+        const rawP = parseInt(parts[1], 10);
+        if (Number.isInteger(rawP) && rawP > 0 && rawP <= 65535) {
+          parsedHost = parts[0];
+          parsedPort = rawP;
+        }
+      }
+    }
+
+    const addr = parsedHost.includes(":")
+      ? `[${parsedHost}]:${parsedPort}`
+      : `${parsedHost}:${parsedPort}`;
 
     // Detect or use forced protocol
     if (this.options.serverProtocol && this.options.serverProtocol !== "unknown") {
@@ -180,8 +207,8 @@ export class TS3Client extends EventEmitter {
           ? { ts3QueryPort: 10011, ts6HttpPort: 10080 }
           : { ts3QueryPort: queryPort, ts6HttpPort: queryPort };
       const detection = await detectServerProtocol(
-        this.options.host,
-        this.options.port,
+        parsedHost,
+        parsedPort,
         3000,
         detectionPorts,
       );
@@ -204,7 +231,7 @@ export class TS3Client extends EventEmitter {
     if (this.detectedProtocol === "ts6") {
       const queryPort = this.options.queryPort !== 10011 ? this.options.queryPort : 10080;
       this.httpQuery = new TS6HttpQuery({
-        host: this.options.host,
+        host: parsedHost,
         port: queryPort,
         apiKey: this.options.ts6ApiKey,
       });
@@ -264,28 +291,113 @@ export class TS3Client extends EventEmitter {
       },
     });
 
-    const rawHandler = (this.client as any).handler;
-    if (rawHandler && typeof rawHandler.onPacket === "function") {
-      const origOnPacket = rawHandler.onPacket.bind(rawHandler);
-      rawHandler.onPacket = (pkt: any) => {
-        try {
-          const type = pkt.typeFlagged & 15;
-          if ((type === 2 || type === 3) && pkt.data && pkt.data.length > 0) {
-            const text = Buffer.from(pkt.data).toString("utf8");
-            const lines = text.split(/[\n\0]/);
-            for (const line of lines) {
-              const clean = line.replace(/\r$/, "");
-              if (clean) {
-                this.handleRawNotification(clean);
+    const patchHandler = (h: any) => {
+      if (!h) return;
+      if (typeof h.connect === "function" && !h._safeConnectPatched) {
+        h._safeConnectPatched = true;
+        h.connect = (targetAddr: string) => {
+          return new Promise<void>((resolve, reject) => {
+            let targetHost: string;
+            let targetRawPort: string;
+            if (targetAddr.startsWith("[")) {
+              const closing = targetAddr.indexOf("]");
+              if (closing > 0 && targetAddr[closing + 1] === ":") {
+                targetHost = targetAddr.slice(1, closing);
+                targetRawPort = targetAddr.slice(closing + 2);
+              } else {
+                targetHost = targetAddr;
+                targetRawPort = "9987";
+              }
+            } else {
+              const sep = targetAddr.lastIndexOf(":");
+              if (sep > 0) {
+                targetHost = targetAddr.slice(0, sep);
+                targetRawPort = targetAddr.slice(sep + 1);
+              } else {
+                targetHost = targetAddr;
+                targetRawPort = "9987";
               }
             }
+
+            const targetPort = parseInt(targetRawPort, 10);
+            if (isNaN(targetPort) || targetPort <= 0 || targetPort > 65535) {
+              reject(new Error(`Invalid TeamSpeak port: "${targetRawPort}"`));
+              return;
+            }
+
+            const socket = dgram.createSocket("udp4");
+            let settled = false;
+            const onError = (err: Error) => {
+              if (settled) return;
+              settled = true;
+              try { socket.close(); } catch {}
+              reject(err);
+            };
+
+            socket.once("error", onError);
+            socket.connect(targetPort, targetHost, (connectErr?: any) => {
+              if (settled) return;
+              socket.off("error", onError);
+              if (connectErr || !(socket as any)._connected) {
+                settled = true;
+                try { socket.close(); } catch {}
+                reject(
+                  connectErr ||
+                    new Error(
+                      `Failed to connect UDP socket to ${targetHost}:${targetPort} (unresolvable hostname or network error)`
+                    )
+                );
+                return;
+              }
+              try {
+                h.start(socket);
+                settled = true;
+                resolve();
+              } catch (err) {
+                settled = true;
+                try { socket.close(); } catch {}
+                reject(err);
+              }
+            });
+          });
+        };
+      }
+
+      if (typeof h.onPacket === "function" && !h._safeOnPacketPatched) {
+        h._safeOnPacketPatched = true;
+        const origOnPacket = h.onPacket.bind(h);
+        h.onPacket = (pkt: any) => {
+          try {
+            const type = pkt.typeFlagged & 15;
+            if ((type === 2 || type === 3) && pkt.data && pkt.data.length > 0) {
+              const text = Buffer.from(pkt.data).toString("utf8");
+              const lines = text.split(/[\n\0]/);
+              for (const line of lines) {
+                const clean = line.replace(/\r$/, "");
+                if (clean) {
+                  this.handleRawNotification(clean);
+                }
+              }
+            }
+          } catch {
+            // ignore parsing error
           }
-        } catch {
-          // ignore parsing error
-        }
-        return origOnPacket(pkt);
-      };
-    }
+          return origOnPacket(pkt);
+        };
+      }
+    };
+
+    let currentHandler = (this.client as any).handler;
+    patchHandler(currentHandler);
+    Object.defineProperty(this.client, "handler", {
+      get: () => currentHandler,
+      set: (newHandler) => {
+        currentHandler = newHandler;
+        patchHandler(newHandler);
+      },
+      configurable: true,
+      enumerable: true,
+    });
 
     this.client.on("textMessage", (msg: TextMessage) => {
       if (msg.invokerID === this.clientId) return;

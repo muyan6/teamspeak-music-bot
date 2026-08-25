@@ -54,6 +54,43 @@ async function connectWithTimeout(
   }
 }
 
+/**
+ * Normalize serverAddress and serverPort:
+ * If user entered "host:port" or "[ipv6]:port" in serverAddress,
+ * intelligently extract the pure host and port.
+ */
+export function normalizeServerAddress(
+  serverAddress: string,
+  defaultPort = 9987
+): { host: string; port: number } {
+  let host = (serverAddress ?? "").trim();
+  let port = defaultPort;
+
+  if (host.startsWith("[")) {
+    const closing = host.indexOf("]");
+    if (closing > 0) {
+      if (host[closing + 1] === ":") {
+        const rawPort = parseInt(host.slice(closing + 2), 10);
+        if (Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535) {
+          port = rawPort;
+        }
+      }
+      host = host.slice(1, closing);
+    }
+  } else if (host.includes(":")) {
+    const parts = host.split(":");
+    if (parts.length === 2) {
+      const rawPort = parseInt(parts[1], 10);
+      if (Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535) {
+        host = parts[0];
+        port = rawPort;
+      }
+    }
+  }
+
+  return { host, port };
+}
+
 export interface CreateBotParams {
   name: string;
   serverAddress: string;
@@ -141,13 +178,17 @@ export class BotManager extends EventEmitter {
   async createBot(params: CreateBotParams): Promise<BotInstance> {
     const id = crypto.randomUUID();
     const spotifyPorts = this.allocateSpotifyPorts(id);
+    const { host: serverAddress, port: serverPort } = normalizeServerAddress(
+      params.serverAddress,
+      params.serverPort ?? 9987
+    );
 
     const bot = new BotInstance({
       id,
       name: params.name,
       tsOptions: {
-        host: params.serverAddress,
-        port: params.serverPort,
+        host: serverAddress,
+        port: serverPort,
         queryPort: params.queryPort ?? 10011,
         nickname: params.nickname,
         defaultChannel: params.defaultChannel,
@@ -183,8 +224,8 @@ export class BotManager extends EventEmitter {
     this.database.saveBotInstance({
       id,
       name: params.name,
-      serverAddress: params.serverAddress,
-      serverPort: params.serverPort,
+      serverAddress,
+      serverPort,
       queryPort: params.queryPort,
       nickname: params.nickname,
       defaultChannel: params.defaultChannel ?? "",
@@ -223,11 +264,19 @@ export class BotManager extends EventEmitter {
     const existing = instances.find((i) => i.id === id);
     if (!existing) throw new Error(`Bot ${id} not found`);
 
+    let serverAddress = params.serverAddress ?? existing.serverAddress;
+    let serverPort = params.serverPort ?? existing.serverPort;
+    if (params.serverAddress !== undefined) {
+      const normalized = normalizeServerAddress(params.serverAddress, serverPort);
+      serverAddress = normalized.host;
+      serverPort = normalized.port;
+    }
+
     this.database.saveBotInstance({
       ...existing,
       name: params.name ?? existing.name,
-      serverAddress: params.serverAddress ?? existing.serverAddress,
-      serverPort: params.serverPort ?? existing.serverPort,
+      serverAddress,
+      serverPort,
       queryPort: params.queryPort ?? existing.queryPort,
       nickname: params.nickname ?? existing.nickname,
       defaultChannel: params.defaultChannel ?? existing.defaultChannel,
@@ -289,12 +338,16 @@ export class BotManager extends EventEmitter {
     const saved = this.database.getBotInstances().find((i) => i.id === id);
     if (saved) {
       const proto = saved.serverProtocol as "ts3" | "ts6" | "" | undefined;
+      const { host: serverAddress, port: serverPort } = normalizeServerAddress(
+        saved.serverAddress,
+        saved.serverPort ?? 9987
+      );
       const bot = new BotInstance({
         id: saved.id,
         name: saved.name,
         tsOptions: {
-          host: saved.serverAddress,
-          port: saved.serverPort,
+          host: serverAddress,
+          port: serverPort,
           queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
           nickname: saved.nickname,
           // Reuse the stored identity so server groups assigned to this bot
@@ -328,8 +381,6 @@ export class BotManager extends EventEmitter {
       this.bots.set(id, bot);
       this.emit("botInstance", bot);
       await connectWithTimeout(bot, 15_000, this.logger);
-      // Mark as autoStart so it reconnects on Docker restart, and persist identity
-      this.database.saveBotInstance({ ...saved, autoStart: true });
       this.persistBotIdentity(saved, bot);
     } else {
       await connectWithTimeout(oldBot, 15_000, this.logger);
@@ -389,12 +440,16 @@ export class BotManager extends EventEmitter {
     const savedInstances = this.database.getBotInstances();
     for (const saved of savedInstances) {
       const proto = saved.serverProtocol as "ts3" | "ts6" | "" | undefined;
+      const { host: serverAddress, port: serverPort } = normalizeServerAddress(
+        saved.serverAddress,
+        saved.serverPort ?? 9987
+      );
       const bot = new BotInstance({
         id: saved.id,
         name: saved.name,
         tsOptions: {
-          host: saved.serverAddress,
-          port: saved.serverPort,
+          host: serverAddress,
+          port: serverPort,
           queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
           nickname: saved.nickname,
           identity: saved.identity || undefined,
@@ -426,31 +481,10 @@ export class BotManager extends EventEmitter {
       this.bots.set(saved.id, bot);
       this.emit("botInstance", bot);
 
-      // Only auto-connect bots that have autoStart enabled
-      if (saved.autoStart) {
-        try {
-          await connectWithTimeout(bot, 15_000, this.logger);
-          // Persist identity after successful connection for future restarts.
-          this.persistBotIdentity(saved, bot);
-          this.logger.info(
-            { botId: saved.id, name: saved.name },
-            "Auto-connected saved bot",
-          );
-        } catch (err) {
-          this.logger.error(
-            { err, botId: saved.id, name: saved.name },
-            "Failed to auto-connect bot (start manually from Settings)",
-          );
-        }
-
-        // Stagger connections to avoid overwhelming the TS server
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      } else {
-        this.logger.info(
-          { botId: saved.id, name: saved.name },
-          "Loaded bot (autoStart disabled, not connecting)"
-        );
-      }
+      this.logger.info(
+        { botId: saved.id, name: saved.name },
+        "Loaded saved bot (startup auto-connect disabled, start manually from WebUI)"
+      );
     }
 
     this.logger.info(

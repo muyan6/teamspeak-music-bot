@@ -1,8 +1,18 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
+
+vi.mock("@discordjs/opus", () => ({
+  default: {
+    OpusEncoder: class {
+      encode(pcm: Buffer) { return pcm; }
+      decode(opus: Buffer) { return opus; }
+    },
+  },
+}));
+
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BotManager } from "./manager.js";
+import { BotManager, normalizeServerAddress } from "./manager.js";
 import { createDatabase, type BotDatabase } from "../data/database.js";
 import { createPermissionStore } from "../data/permissions.js";
 import { getDefaultConfig, loadConfig, saveConfig, type BotConfig } from "../data/config.js";
@@ -151,3 +161,107 @@ describe("BotManager — spotifyOAuth threading to bot controllers (C3.1)", () =
     bot.disconnect();
   });
 });
+
+describe("normalizeServerAddress", () => {
+  it("leaves standard host and port unchanged", () => {
+    expect(normalizeServerAddress("ts.example.com", 9987)).toEqual({
+      host: "ts.example.com",
+      port: 9987,
+    });
+  });
+
+  it("splits host:port when port is embedded in host string", () => {
+    expect(normalizeServerAddress("stormclub.ts3.uno:60001", 9987)).toEqual({
+      host: "stormclub.ts3.uno",
+      port: 60001,
+    });
+  });
+
+  it("splits IPv4:port string", () => {
+    expect(normalizeServerAddress("150.158.129.222:9988", 9987)).toEqual({
+      host: "150.158.129.222",
+      port: 9988,
+    });
+  });
+
+  it("handles IPv6 with bracketed notation [2001:db8::1]:9987", () => {
+    expect(normalizeServerAddress("[2001:db8::1]:9987", 9987)).toEqual({
+      host: "2001:db8::1",
+      port: 9987,
+    });
+  });
+
+  it("trims whitespace from address", () => {
+    expect(normalizeServerAddress("  myts.com:12345  ", 9987)).toEqual({
+      host: "myts.com",
+      port: 12345,
+    });
+  });
+});
+
+describe("BotManager.loadSavedBots — startup behavior", () => {
+  const dirs: string[] = [];
+  let db: BotDatabase | undefined;
+
+  afterEach(() => {
+    try {
+      db?.close();
+    } catch {
+      /* ignore */
+    }
+    db = undefined;
+    for (const d of dirs) {
+      rmSync(d, { recursive: true, force: true });
+    }
+    dirs.length = 0;
+  });
+
+  it("loads saved bot instances into memory without auto-connecting on startup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmusicbot-load-test-"));
+    dirs.push(dir);
+    const configPath = join(dir, "config.json");
+    const config = getDefaultConfig();
+    saveConfig(configPath, config);
+    db = createDatabase(":memory:");
+    const permissions = createPermissionStore(db.db);
+    const provider = {} as unknown as MusicProvider;
+
+    db.saveBotInstance({
+      id: "bot-saved-1",
+      name: "Saved Bot 1",
+      serverAddress: "127.0.0.1",
+      serverPort: 9987,
+      nickname: "bot1",
+      defaultChannel: "",
+      channelId: "",
+      channelPassword: "",
+      autoStart: true,
+      serverProtocol: "",
+      ts6ApiKey: "",
+      serverPassword: "",
+    });
+
+    const manager = new BotManager(
+      provider,
+      provider,
+      provider,
+      db,
+      config,
+      stubLogger,
+      {} as unknown as AvatarStore,
+      permissions,
+      configPath,
+    );
+
+    // loadSavedBots should populate manager.getAllBots() and NOT attempt network connection
+    await manager.loadSavedBots();
+
+    const allBots = manager.getAllBots();
+    expect(allBots).toHaveLength(1);
+    expect(allBots[0].id).toBe("bot-saved-1");
+    expect(allBots[0].isConnected()).toBe(false);
+
+    allBots[0].disconnect();
+  });
+});
+
