@@ -553,6 +553,7 @@ export class BotInstance extends EventEmitter {
         return true;
       });
       const userCount = realListeners.length;
+      this.handleOccupancy(userCount);
       this.logger.info(
         {
           channelId: this.tsClient.getChannelId().toString(),
@@ -565,7 +566,6 @@ export class BotInstance extends EventEmitter {
         },
         "Channel occupancy evaluated"
       );
-      this.handleOccupancy(userCount);
     } catch (err) {
       this.logger.warn({ err }, "refreshOccupancy failed");
     } finally {
