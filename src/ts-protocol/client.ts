@@ -338,7 +338,16 @@ export class TS3Client extends EventEmitter {
             socket.connect(targetPort, targetHost, (connectErr?: any) => {
               if (settled) return;
               socket.off("error", onError);
-              if (connectErr || !(socket as any)._connected) {
+
+              let isConnected = false;
+              try {
+                socket.remoteAddress();
+                isConnected = true;
+              } catch {
+                isConnected = false;
+              }
+
+              if (connectErr || !isConnected) {
                 settled = true;
                 try { socket.close(); } catch {}
                 reject(
