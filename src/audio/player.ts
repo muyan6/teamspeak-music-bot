@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { accessSync, chmodSync, constants, mkdtempSync, rmSync } from "node:fs";
@@ -29,19 +29,36 @@ function isExecutable(binPath: string): boolean {
   }
 }
 
-const resolvedFfmpeg: string = (() => {
-  const isWinPath = ffmpegPath ? /\\/.test(ffmpegPath) || ffmpegPath.endsWith(".exe") : false;
-  const onWindows = process.platform === "win32";
-  if (ffmpegPath && (onWindows === isWinPath)) {
-    // Resolve the bundled binary without launching a synchronous probe during
-    // module import. A failed spawn is handled by the existing async error path.
-    if (isExecutable(ffmpegPath)) return ffmpegPath;
+function testFfmpeg(bin: string): boolean {
+  try {
+    const res = spawnSync(bin, ["-version"], { timeout: 3000, stdio: "ignore" });
+    return res.status === 0;
+  } catch {
+    return false;
   }
-  return "ffmpeg";
-})();
+}
+
+let cachedFfmpegCmd: string | null = null;
 
 export function getFfmpegCommand(): string {
-  return resolvedFfmpeg;
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  if (cachedFfmpegCmd) return cachedFfmpegCmd;
+
+  // Prefer system ffmpeg from PATH if available and working (avoids ffmpeg-static SIGSEGV on Linux/Docker)
+  if (testFfmpeg("ffmpeg")) {
+    cachedFfmpegCmd = "ffmpeg";
+    return "ffmpeg";
+  }
+
+  const isWinPath = ffmpegPath ? /\\/.test(ffmpegPath) || ffmpegPath.endsWith(".exe") : false;
+  const onWindows = process.platform === "win32";
+  if (ffmpegPath && (onWindows === isWinPath) && isExecutable(ffmpegPath)) {
+    cachedFfmpegCmd = ffmpegPath;
+    return ffmpegPath;
+  }
+
+  cachedFfmpegCmd = "ffmpeg";
+  return "ffmpeg";
 }
 
 const BROWSER_UA =
@@ -342,9 +359,23 @@ export class AudioPlayer extends EventEmitter {
       }
     });
 
+    let stderrTail = "";
+    this.ffmpeg.stderr?.on("data", (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString("utf8")).slice(-1000);
+    });
+
     this.ffmpeg.on("exit", (code, signal) => {
       if (currentPid) globalActivePids.delete(currentPid);
-      this.logger.info({ pid: currentPid, code, signal }, "FFmpeg exited");
+      if ((code !== null && code !== 0) || signal) {
+        this.logger.warn({ pid: currentPid, code, signal, stderr: stderrTail }, "FFmpeg exited with error/signal");
+        if (this.sessionId === currentSessionId && this.framesPlayed === 0 && this.pcmBufferedBytes === 0) {
+          this.spawnFailed = true;
+          this.consecutiveFailures++;
+          this.emit("error", new Error(`FFmpeg exited with code ${code}, signal ${signal}: ${stderrTail || "crash"}`));
+        }
+      } else {
+        this.logger.info({ pid: currentPid, code, signal }, "FFmpeg exited");
+      }
       
       // 只有当前会话的进程结束才置空变量
       if (this.sessionId === currentSessionId) {
