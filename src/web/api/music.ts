@@ -1,8 +1,9 @@
 import express, { Router, type Response } from "express";
-import type { MusicProvider, Song, Album } from "../../music/provider.js";
+import type { MusicProvider, Song, Album, LyricLine, SearchResult } from "../../music/provider.js";
 import { YouTubeProvider } from "../../music/youtube.js";
 import type { Logger } from "../../logger.js";
 import { isProviderEnabled, defaultPlatform, saveConfig, type BotConfig } from "../../data/config.js";
+import { LRUCache } from "../../data/cache.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { requireNotGuest } from "../middleware/requireNotGuest.js";
 import { authorize } from "../middleware/authorize.js";
@@ -76,6 +77,27 @@ export function createMusicRouter(
   const router = Router();
   const youtubeProvider: MusicProvider = new YouTubeProvider();
   let activeLocalUploads = 0;
+
+  const lyricsCache = new LRUCache<string, LyricLine[]>({
+    maxSize: 500,
+    defaultTtlMs: 6 * 60 * 60 * 1000, // 6 hours
+  });
+  const albumCache = new LRUCache<string, Song[]>({
+    maxSize: 200,
+    defaultTtlMs: 60 * 60 * 1000, // 1 hour
+  });
+  const songDetailCache = new LRUCache<string, Song>({
+    maxSize: 500,
+    defaultTtlMs: 60 * 60 * 1000, // 1 hour
+  });
+  const playlistSongsCache = new LRUCache<string, Song[]>({
+    maxSize: 200,
+    defaultTtlMs: 15 * 60 * 1000, // 15 minutes
+  });
+  const searchCache = new LRUCache<string, SearchResult>({
+    maxSize: 200,
+    defaultTtlMs: 3 * 60 * 1000, // 3 minutes
+  });
 
   const reserveLocalUploadSlot: express.RequestHandler = (_req, res, next) => {
     if (activeLocalUploads >= LOCAL_UPLOAD_MAX_CONCURRENCY) {
@@ -191,11 +213,19 @@ export function createMusicRouter(
       // Server-side pagination: offset lets the web load past the first page.
       // Clamp to >= 0 so a bad/negative value falls back to the first page.
       const parsedOffset = Math.max(0, parseInt(offset as string) || 0);
+      const parsedLimit = parseInt(limit as string) || 20;
+      const cacheKey = `${String(platform ?? "default")}:${String(q).trim().toLowerCase()}:${parsedLimit}:${parsedOffset}`;
+      const cached = searchCache.get(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
       const result = await provider.search(
         q as string,
-        parseInt(limit as string) || 20,
+        parsedLimit,
         parsedOffset
       );
+      searchCache.set(cacheKey, result);
       res.json(result);
     } catch (err) {
       logger.error({ err }, "Search failed");
@@ -264,11 +294,19 @@ export function createMusicRouter(
       }
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
+      const platKey = String(req.query.platform ?? "default");
+      const cacheKey = `${platKey}:${req.params.id}`;
+      const cached = songDetailCache.get(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
       const song = await provider.getSongDetail(req.params.id);
       if (!song) {
         res.status(404).json({ error: "Song not found" });
         return;
       }
+      songDetailCache.set(cacheKey, song);
       res.json(song);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -279,7 +317,15 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
+      const platKey = String(req.query.platform ?? "default");
+      const cacheKey = `${platKey}:${req.params.id}`;
+      const cached = playlistSongsCache.get(cacheKey);
+      if (cached) {
+        res.json({ songs: cached });
+        return;
+      }
       const songs = await provider.getPlaylistSongs(req.params.id);
+      playlistSongsCache.set(cacheKey, songs);
       res.json({ songs });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -301,7 +347,15 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
+      const platKey = String(req.query.platform ?? "default");
+      const cacheKey = `${platKey}:${req.params.id}`;
+      const cached = albumCache.get(cacheKey);
+      if (cached) {
+        res.json({ songs: cached });
+        return;
+      }
       const songs = await provider.getAlbumSongs(req.params.id);
+      albumCache.set(cacheKey, songs);
       res.json({ songs });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -312,7 +366,15 @@ export function createMusicRouter(
     try {
       const provider = resolveProvider(req.query.platform, res);
       if (!provider) return;
+      const platKey = String(req.query.platform ?? "default");
+      const cacheKey = `${platKey}:${req.params.id}`;
+      const cached = lyricsCache.get(cacheKey);
+      if (cached) {
+        res.json({ lyrics: cached });
+        return;
+      }
       const lyrics = await provider.getLyrics(req.params.id);
+      lyricsCache.set(cacheKey, lyrics);
       res.json({ lyrics });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });

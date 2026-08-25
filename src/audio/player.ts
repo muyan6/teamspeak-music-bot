@@ -695,6 +695,12 @@ export class AudioPlayer extends EventEmitter {
   private scheduleNextFrame(): void {
     if (!this.frameLoopRunning) return;
     const loopSessionId = this.sessionId;
+    const now = performance.now();
+    // Excessive lag protection: if event loop was blocked or system suspended for > 200ms,
+    // re-align nextFrameTime to current time to avoid spraying frames in rapid bursts.
+    if (now - this.nextFrameTime > 200) {
+      this.nextFrameTime = now;
+    }
     this.nextFrameTime += FRAME_DURATION_MS;
     const delay = Math.max(0, this.nextFrameTime - performance.now());
 

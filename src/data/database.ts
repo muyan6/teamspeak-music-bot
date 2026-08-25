@@ -15,6 +15,8 @@ export const SHARED_QUEUE_OWNER = "__shared__";
 export const MAX_SAVED_QUEUES = 50;
 /** Cap per saved queue / persisted live-queue snapshot. */
 export const MAX_QUEUE_SONGS = 1000;
+/** Cap for play history entries retained per bot. */
+export const MAX_PLAY_HISTORY_PER_BOT = 1000;
 
 /** A stored song is a QueuedSong minus the lazily-resolved `url`. */
 export type StoredSong = Omit<QueuedSong, "url">;
@@ -234,6 +236,7 @@ function initTables(db: Database.Database): void {
       requestedBy TEXT NOT NULL DEFAULT '',
       playedAt TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE INDEX IF NOT EXISTS idx_play_history_botId ON play_history(botId, id DESC);
 
     CREATE TABLE IF NOT EXISTS bot_instances (
       id TEXT PRIMARY KEY,
@@ -391,6 +394,13 @@ export function createDatabase(dbPath: string): BotDatabase {
     VALUES (@botId, @songId, @songName, @artist, @album, @platform, @coverUrl, @requestedBy)
   `);
 
+  const pruneHistory = db.prepare(`
+    DELETE FROM play_history
+    WHERE botId = ? AND id NOT IN (
+      SELECT id FROM play_history WHERE botId = ? ORDER BY id DESC LIMIT ?
+    )
+  `);
+
   const selectHistory = db.prepare(`
     SELECT * FROM play_history WHERE botId = ? ORDER BY id DESC LIMIT ?
   `);
@@ -529,6 +539,7 @@ export function createDatabase(dbPath: string): BotDatabase {
 
     addPlayHistory(record) {
       insertHistory.run({ ...record, requestedBy: record.requestedBy ?? "" });
+      pruneHistory.run(record.botId, record.botId, MAX_PLAY_HISTORY_PER_BOT);
     },
 
     getPlayHistory(botId, limit) {

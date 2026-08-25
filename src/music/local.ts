@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { createRequire } from "node:module";
 import path from "node:path";
 import crypto from "node:crypto";
+import { getFfmpegCommand } from "../audio/player.js";
 import type {
   Album,
   AuthStatus,
@@ -171,34 +172,38 @@ export function parseMediaProbe(stderr: string): Omit<MediaProbe, "probed"> {
 
 async function probeMedia(filePath: string): Promise<MediaProbe> {
   return new Promise((resolve) => {
-    const ffmpeg = spawn(ffmpegPath || "ffmpeg", ["-hide_banner", "-i", filePath], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    let settled = false;
-    const done = (probe: MediaProbe) => {
-      if (settled) return;
-      settled = true;
-      resolve(probe);
-    };
-    // Video containers are much larger than the audio files this used to see,
-    // and the probe only reads headers — but a network/USB path can still be
-    // slow, so allow more than the old 5s before giving up.
-    const timeout = setTimeout(() => {
-      ffmpeg.kill("SIGKILL");
-      done({ durationSeconds: 0, hasAudio: false, audioCodec: null, recognized: false, probed: false });
-    }, 20000);
-    ffmpeg.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    ffmpeg.on("error", () => {
-      clearTimeout(timeout);
-      done({ durationSeconds: 0, hasAudio: false, audioCodec: null, recognized: false, probed: false });
-    });
-    ffmpeg.on("close", () => {
-      clearTimeout(timeout);
-      done({ ...parseMediaProbe(stderr), probed: true });
-    });
+    try {
+      const ffmpeg = spawn(getFfmpegCommand(), ["-hide_banner", "-i", filePath], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let stderr = "";
+      let settled = false;
+      const done = (probe: MediaProbe) => {
+        if (settled) return;
+        settled = true;
+        resolve(probe);
+      };
+      // Video containers are much larger than the audio files this used to see,
+      // and the probe only reads headers — but a network/USB path can still be
+      // slow, so allow more than the old 5s before giving up.
+      const timeout = setTimeout(() => {
+        try { ffmpeg.kill("SIGKILL"); } catch {}
+        done({ durationSeconds: 0, hasAudio: false, audioCodec: null, recognized: false, probed: false });
+      }, 20000);
+      ffmpeg.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString("utf8");
+      });
+      ffmpeg.on("error", () => {
+        clearTimeout(timeout);
+        done({ durationSeconds: 0, hasAudio: false, audioCodec: null, recognized: false, probed: false });
+      });
+      ffmpeg.on("close", () => {
+        clearTimeout(timeout);
+        done({ ...parseMediaProbe(stderr), probed: true });
+      });
+    } catch {
+      resolve({ durationSeconds: 0, hasAudio: false, audioCodec: null, recognized: false, probed: false });
+    }
   });
 }
 
@@ -216,26 +221,30 @@ async function probeMedia(filePath: string): Promise<MediaProbe> {
  */
 async function extractAudioTrack(source: string, target: string): Promise<boolean> {
   const ok = await new Promise<boolean>((resolve) => {
-    const ffmpeg = spawn(
-      ffmpegPath || "ffmpeg",
-      ["-hide_banner", "-loglevel", "error", "-y", "-i", source,
-       "-vn", "-sn", "-dn", "-map", "0:a:0", "-c:a", "copy", target],
-      { stdio: ["ignore", "ignore", "ignore"] },
-    );
-    let settled = false;
-    const done = (v: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(v);
-    };
-    // Remuxing is I/O bound, but a multi-GB input on a slow disk still takes
-    // a while. Cap it so a pathological file cannot wedge the upload request.
-    const timeout = setTimeout(() => {
-      ffmpeg.kill("SIGKILL");
-      done(false);
-    }, 120000);
-    ffmpeg.on("error", () => { clearTimeout(timeout); done(false); });
-    ffmpeg.on("close", (code) => { clearTimeout(timeout); done(code === 0); });
+    try {
+      const ffmpeg = spawn(
+        getFfmpegCommand(),
+        ["-hide_banner", "-loglevel", "error", "-y", "-i", source,
+         "-vn", "-sn", "-dn", "-map", "0:a:0", "-c:a", "copy", target],
+        { stdio: ["ignore", "ignore", "ignore"] },
+      );
+      let settled = false;
+      const done = (v: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(v);
+      };
+      // Remuxing is I/O bound, but a multi-GB input on a slow disk still takes
+      // a while. Cap it so a pathological file cannot wedge the upload request.
+      const timeout = setTimeout(() => {
+        try { ffmpeg.kill("SIGKILL"); } catch {}
+        done(false);
+      }, 120000);
+      ffmpeg.on("error", () => { clearTimeout(timeout); done(false); });
+      ffmpeg.on("close", (code) => { clearTimeout(timeout); done(code === 0); });
+    } catch {
+      resolve(false);
+    }
   });
   if (!ok) return false;
   try {

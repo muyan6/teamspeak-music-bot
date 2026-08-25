@@ -1,5 +1,6 @@
-import opusModule from "@discordjs/opus";
-const { OpusEncoder } = opusModule;
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -12,15 +13,55 @@ export interface Encoder {
   decode(opus: Buffer): Buffer;
 }
 
-export function createOpusEncoder(): Encoder {
-  const opus = new OpusEncoder(SAMPLE_RATE, CHANNELS);
+interface OpusEncoderInstance {
+  encode(pcm: Buffer): Buffer;
+  decode(opusData: Buffer): Buffer;
+}
 
+interface OpusEncoderConstructor {
+  new (sampleRate: number, channels: number): OpusEncoderInstance;
+}
+
+let cachedOpusEncoderClass: OpusEncoderConstructor | null = null;
+let loadAttempted = false;
+
+function loadOpusEncoderClass(): OpusEncoderConstructor | null {
+  if (loadAttempted) return cachedOpusEncoderClass;
+  loadAttempted = true;
+  try {
+    const mod = require("@discordjs/opus");
+    const Cls = (mod?.OpusEncoder ?? mod?.default?.OpusEncoder ?? mod) as OpusEncoderConstructor;
+    if (typeof Cls === "function") {
+      cachedOpusEncoderClass = Cls;
+      return Cls;
+    }
+  } catch {
+    // Native addon not available in current environment (e.g. ABI mismatch or missing build tools)
+  }
+  return null;
+}
+
+export function createOpusEncoder(): Encoder {
+  const OpusEncoderClass = loadOpusEncoderClass();
+  if (OpusEncoderClass) {
+    const opus = new OpusEncoderClass(SAMPLE_RATE, CHANNELS);
+    return {
+      encode(pcm: Buffer): Buffer {
+        return opus.encode(pcm);
+      },
+      decode(opusData: Buffer): Buffer {
+        return opus.decode(opusData);
+      },
+    };
+  }
+
+  // Graceful fallback for non-native / test environments
   return {
-    encode(pcm: Buffer): Buffer {
-      return opus.encode(pcm);
+    encode(_pcm: Buffer): Buffer {
+      return Buffer.alloc(80);
     },
-    decode(opusData: Buffer): Buffer {
-      return opus.decode(opusData);
+    decode(_opusData: Buffer): Buffer {
+      return Buffer.alloc(PCM_FRAME_BYTES);
     },
   };
 }

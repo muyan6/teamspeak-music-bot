@@ -1076,8 +1076,11 @@ export class BotInstance extends EventEmitter {
       (p) => p !== song.platform && isProviderEnabled(this.config, p),
     );
 
+    if (candidatePlatforms.length === 0) return null;
+
     const query = `${song.name} ${song.artist}`.trim();
-    for (const p of candidatePlatforms) {
+
+    const checkCandidate = async (p: (typeof candidatePlatforms)[number]) => {
       try {
         const candidateProvider = this.getProviderFor(p);
         const searchResults = await candidateProvider.search(query, 1);
@@ -1085,16 +1088,8 @@ export class BotInstance extends EventEmitter {
           const match = searchResults.songs[0];
           const candidateResult = await candidateProvider.getSongUrl(match.id);
           if (candidateResult?.url) {
-            this.logger.info(
-              { original: song.platform, fallback: p, song: song.name },
-              "Auto-source fallback succeeded",
-            );
-            await this.tsClient
-              .sendTextMessage(
-                `🔄 [自动换源] 原音源无法播放，已自动切换至 ${p} 播放《${song.name}》`,
-              )
-              .catch(() => {});
             return {
+              platform: p,
               url: candidateResult.url,
               trialDuration: candidateResult.trialDuration,
             };
@@ -1103,6 +1098,25 @@ export class BotInstance extends EventEmitter {
       } catch (err) {
         this.logger.debug({ err, platform: p }, "Fallback candidate search failed");
       }
+      return null;
+    };
+
+    const results = await Promise.all(candidatePlatforms.map(checkCandidate));
+    const chosen = results.find((r): r is NonNullable<typeof r> => r !== null);
+    if (chosen) {
+      this.logger.info(
+        { original: song.platform, fallback: chosen.platform, song: song.name },
+        "Auto-source fallback succeeded",
+      );
+      await this.tsClient
+        .sendTextMessage(
+          `🔄 [自动换源] 原音源无法播放，已自动切换至 ${chosen.platform} 播放《${song.name}》`,
+        )
+        .catch(() => {});
+      return {
+        url: chosen.url,
+        trialDuration: chosen.trialDuration,
+      };
     }
     return null;
   }
