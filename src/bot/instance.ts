@@ -2042,6 +2042,7 @@ export class BotInstance extends EventEmitter {
     if (current) {
       this.player.resetFailures();
       await this.resolveAndPlay(current);
+      void this.refreshOccupancy?.();
     }
     this.logger.info(
       { count: st.songs.length, index: st.currentIndex },
