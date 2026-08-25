@@ -78,7 +78,7 @@ function makeHarness(
 }
 
 describe("RustLibrespotBackend.start", () => {
-  it("spawns librespot with the pipe/stdout arg set and the OAuth access token", async () => {
+  it("spawns librespot without exposing the OAuth token in argv", async () => {
     const h = makeHarness();
     await h.backend.start();
     expect(h.spawn).toHaveBeenCalledWith(
@@ -90,14 +90,16 @@ describe("RustLibrespotBackend.start", () => {
         "--format", "S16",
         "--cache", "/tmp/cache",
         "--device-type", "speaker",
-        "--access-token", "tok-123",
       ],
-      expect.anything(),
+      expect.objectContaining({
+        env: expect.objectContaining({ LIBRESPOT_ACCESS_TOKEN: "tok-123" }),
+      }),
     );
     // NO --device (=> stdout) and NO --passthrough (=> decoded PCM, not Ogg).
     const args = h.spawn.mock.calls.find((c) => String(c[0]).includes("librespot"))![1] as string[];
     expect(args).not.toContain("--device");
     expect(args).not.toContain("--passthrough");
+    expect(args).not.toContain("tok-123");
     h.backend.stop();
   });
 

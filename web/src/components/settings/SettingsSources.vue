@@ -346,7 +346,9 @@ async function checkAuthStatus() {
     if (res.data) {
       Object.assign(authStatus, res.data);
     }
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('平台登录状态加载失败', 'error');
+  }
 }
 
 async function loadSourcesSettings() {
@@ -369,7 +371,9 @@ async function loadSourcesSettings() {
       spotifyForm.clientId = res.data.spotify.clientId ?? '';
       spotifyHasSecret.value = Boolean(res.data.spotify.hasClientSecret);
     }
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('音源设置加载失败', 'error');
+  }
 }
 
 async function testJellyfin() {
@@ -415,7 +419,9 @@ async function saveDefaultPlatform() {
     await axios.post('/api/bot/settings', {
       defaultPlatform: defaultPlatformForm.value || null,
     });
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('默认音源保存失败', 'error');
+  }
 }
 
 async function saveSpotify() {
@@ -458,7 +464,9 @@ async function openQrModal(platform: string) {
         } else if (checkRes.data?.message) {
           qrStatusMsg.value = checkRes.data.message;
         }
-      } catch { /* ignore */ }
+      } catch {
+        store.notify('二维码登录状态检查失败', 'error');
+      }
     }, 2500);
   } catch {
     qrStatusMsg.value = '获取二维码失败';
@@ -497,7 +505,9 @@ async function logoutPlatform(platform: string) {
   try {
     await axios.post(`/api/auth/logout`, { platform });
     await checkAuthStatus();
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('平台退出登录失败', 'error');
+  }
 }
 
 onMounted(() => {

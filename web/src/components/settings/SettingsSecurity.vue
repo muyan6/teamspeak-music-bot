@@ -181,8 +181,10 @@
 import { ref, reactive, onMounted } from 'vue';
 import { Icon } from '@iconify/vue';
 import axios from 'axios';
+import { usePlayerStore } from '../../stores/player';
 import { useSession } from '../../composables/useSession.js';
 
+const store = usePlayerStore();
 const session = useSession();
 
 // Admin Server Groups
@@ -237,7 +239,9 @@ async function loadSecuritySettings() {
         Object.assign(guestModeForm.permissions, res.data.guestMode.permissions);
       }
     }
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('安全设置加载失败', 'error');
+  }
 }
 
 async function saveAdminGroups() {
@@ -280,7 +284,9 @@ async function loadUsers() {
   try {
     const res = await axios.get('/api/users');
     userList.value = res.data?.users || [];
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('用户列表加载失败', 'error');
+  }
 }
 
 function openCreateUserModal() {
@@ -319,7 +325,9 @@ async function loadAuditLogs() {
   try {
     const res = await axios.get('/api/audit');
     auditLogs.value = res.data?.logs || [];
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('审计日志加载失败', 'error');
+  }
   finally {
     loadingLogs.value = false;
   }

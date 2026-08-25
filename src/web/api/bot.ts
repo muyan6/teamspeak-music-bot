@@ -10,6 +10,56 @@ import { requireNotGuest } from "../middleware/requireNotGuest.js";
 import { GUEST_PERMISSION_FLAGS } from "../../data/permissions.js";
 import type { ServerProtocol } from "../../ts-protocol/client.js";
 
+class InvalidBotInputError extends Error {}
+
+function requiredBotText(value: unknown, field: string, maxLength: number): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new InvalidBotInputError(`${field} is required`);
+  }
+  const text = value.trim();
+  if (text.length > maxLength) {
+    throw new InvalidBotInputError(`${field} exceeds ${maxLength} characters`);
+  }
+  return text;
+}
+
+function optionalBotText(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new InvalidBotInputError(`${field} must be a string`);
+  }
+  if (value.length > maxLength) {
+    throw new InvalidBotInputError(`${field} exceeds ${maxLength} characters`);
+  }
+  return value;
+}
+
+function optionalRequiredBotText(value: unknown, field: string, maxLength: number): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requiredBotText(value, field, maxLength);
+}
+
+function botPort(value: unknown, field: string, fallback?: number): number | undefined {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 65_535) {
+    throw new InvalidBotInputError(`${field} must be an integer between 1 and 65535`);
+  }
+  return value;
+}
+
+function botProtocol(value: unknown): ServerProtocol | "" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "") return "";
+  if (value === "ts3" || value === "ts6") return value;
+  throw new InvalidBotInputError("serverProtocol must be ts3, ts6, or empty");
+}
+
+function botBoolean(value: unknown, field: string, fallback?: boolean): boolean | undefined {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "boolean") throw new InvalidBotInputError(`${field} must be boolean`);
+  return value;
+}
+
 export function createBotRouter(
   botManager: BotManager,
   config: BotConfig,
@@ -442,7 +492,20 @@ export function createBotRouter(
 
   router.post("/", requirePermission("bot.manage"), async (req, res) => {
     try {
-      const {
+      const body = req.body as Record<string, unknown>;
+      const name = requiredBotText(body.name, "name", 100);
+      const serverAddress = requiredBotText(body.serverAddress, "serverAddress", 255);
+      const nickname = requiredBotText(body.nickname, "nickname", 100);
+      const serverPort = botPort(body.serverPort, "serverPort", 9987)!;
+      const queryPort = botPort(body.queryPort, "queryPort");
+      const defaultChannel = optionalBotText(body.defaultChannel, "defaultChannel", 512);
+      const channelId = optionalBotText(body.channelId, "channelId", 128);
+      const channelPassword = optionalBotText(body.channelPassword, "channelPassword", 1024);
+      const serverPassword = optionalBotText(body.serverPassword, "serverPassword", 1024);
+      const autoStart = botBoolean(body.autoStart, "autoStart", false)!;
+      const normalizedProtocol = botProtocol(body.serverProtocol);
+      const ts6ApiKey = optionalBotText(body.ts6ApiKey, "ts6ApiKey", 4096);
+      const bot = await botManager.createBot({
         name,
         serverAddress,
         serverPort,
@@ -453,45 +516,15 @@ export function createBotRouter(
         channelPassword,
         serverPassword,
         autoStart,
-        serverProtocol,
-        ts6ApiKey,
-      } = req.body;
-      if (!name || !serverAddress || !nickname) {
-        res
-          .status(400)
-          .json({ error: "name, serverAddress, and nickname are required" });
-        return;
-      }
-      const normalizedProtocol: ServerProtocol | "" | undefined =
-        serverProtocol === "ts3" || serverProtocol === "ts6"
-          ? serverProtocol
-          : serverProtocol === ""
-            ? ""
-            : undefined;
-      const normalizedQueryPort =
-        typeof queryPort === "number" && Number.isInteger(queryPort) && queryPort > 0 && queryPort <= 65_535
-          ? queryPort
-          : undefined;
-      if (queryPort !== undefined && normalizedQueryPort === undefined) {
-        res.status(400).json({ error: "queryPort must be an integer between 1 and 65535" });
-        return;
-      }
-      const bot = await botManager.createBot({
-        name,
-        serverAddress,
-        serverPort: serverPort ?? 9987,
-        queryPort: normalizedQueryPort,
-        nickname,
-        defaultChannel,
-        channelId,
-        channelPassword,
-        serverPassword,
-        autoStart: autoStart ?? false,
         serverProtocol: normalizedProtocol,
-        ts6ApiKey: typeof ts6ApiKey === "string" && ts6ApiKey.length > 0 ? ts6ApiKey : undefined,
+        ts6ApiKey: ts6ApiKey || undefined,
       });
       res.status(201).json(bot.getStatus());
     } catch (err) {
+      if (err instanceof InvalidBotInputError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
       logger.error({ err }, "Failed to create bot");
       res.status(500).json({ error: (err as Error).message });
     }
@@ -505,7 +538,20 @@ export function createBotRouter(
         res.status(404).json({ error: "Bot not found" });
         return;
       }
-      const {
+      const body = req.body as Record<string, unknown>;
+      const name = optionalRequiredBotText(body.name, "name", 100);
+      const serverAddress = optionalRequiredBotText(body.serverAddress, "serverAddress", 255);
+      const serverPort = botPort(body.serverPort, "serverPort");
+      const queryPort = botPort(body.queryPort, "queryPort");
+      const nickname = optionalRequiredBotText(body.nickname, "nickname", 100);
+      const defaultChannel = optionalBotText(body.defaultChannel, "defaultChannel", 512);
+      const channelId = optionalBotText(body.channelId, "channelId", 128);
+      const channelPassword = optionalBotText(body.channelPassword, "channelPassword", 1024);
+      const serverPassword = optionalBotText(body.serverPassword, "serverPassword", 1024);
+      const normalizedProtocol = botProtocol(body.serverProtocol);
+      const ts6ApiKey = optionalBotText(body.ts6ApiKey, "ts6ApiKey", 4096);
+      // Update in database
+      botManager.updateBot(req.params.id, {
         name,
         serverAddress,
         serverPort,
@@ -515,39 +561,15 @@ export function createBotRouter(
         channelId,
         channelPassword,
         serverPassword,
-        serverProtocol,
-        ts6ApiKey,
-      } = req.body;
-      const normalizedQueryPort =
-        typeof queryPort === "number" && Number.isInteger(queryPort) && queryPort > 0 && queryPort <= 65_535
-          ? queryPort
-          : undefined;
-      if (queryPort !== undefined && normalizedQueryPort === undefined) {
-        res.status(400).json({ error: "queryPort must be an integer between 1 and 65535" });
-        return;
-      }
-      const normalizedProtocol: ServerProtocol | "" | undefined =
-        serverProtocol === "ts3" || serverProtocol === "ts6"
-          ? serverProtocol
-          : serverProtocol === ""
-            ? ""
-            : undefined;
-      // Update in database
-      botManager.updateBot(req.params.id, {
-        name,
-        serverAddress,
-        serverPort,
-        queryPort: normalizedQueryPort,
-        nickname,
-        defaultChannel,
-        channelId,
-        channelPassword,
-        serverPassword,
         serverProtocol: normalizedProtocol,
-        ts6ApiKey: typeof ts6ApiKey === "string" && ts6ApiKey.length > 0 ? ts6ApiKey : undefined,
+        ts6ApiKey: ts6ApiKey || undefined,
       });
       res.json({ success: true });
     } catch (err) {
+      if (err instanceof InvalidBotInputError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
       logger.error({ err }, "Failed to update bot");
       res.status(500).json({ error: (err as Error).message });
     }

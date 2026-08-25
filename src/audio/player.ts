@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { accessSync, chmodSync, constants, mkdtempSync, rmSync } from "node:fs";
@@ -29,21 +29,13 @@ function isExecutable(binPath: string): boolean {
   }
 }
 
-function ffmpegWorks(bin: string): boolean {
-  try {
-    execSync(`"${bin}" -version`, { timeout: 5000, stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const resolvedFfmpeg: string = (() => {
-  if (ffmpegWorks("ffmpeg")) return "ffmpeg";
   const isWinPath = ffmpegPath ? /\\/.test(ffmpegPath) || ffmpegPath.endsWith(".exe") : false;
   const onWindows = process.platform === "win32";
   if (ffmpegPath && (onWindows === isWinPath)) {
-    if (isExecutable(ffmpegPath) && ffmpegWorks(ffmpegPath)) return ffmpegPath;
+    // Resolve the bundled binary without launching a synchronous probe during
+    // module import. A failed spawn is handled by the existing async error path.
+    if (isExecutable(ffmpegPath)) return ffmpegPath;
   }
   return "ffmpeg";
 })();
@@ -55,6 +47,7 @@ export function getFfmpegCommand(): string {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const POWERSHELL_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const POWERSHELL_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 
 // Old jdymusic CDN paths (e.g. /jdymusic/obj/...) RST direct Node-stack
 // requests on Windows; same URL works when fetched via WinHTTP. Empirically,
@@ -189,7 +182,9 @@ export class AudioPlayer extends EventEmitter {
   private fadeTargetGain = 1;
   private fadeRampStartedAt = 0;
   private fadeRampDurationMs = 0;
-  private pcmBuffer: Buffer = Buffer.alloc(0);
+  private pcmChunks: Buffer[] = [];
+  private pcmChunkOffset = 0;
+  private pcmBufferedBytes = 0;
   private logger: Logger;
   private frameLoopRunning = false;
   private nextFrameTime = 0;
@@ -240,6 +235,59 @@ export class AudioPlayer extends EventEmitter {
     this.logger = logger;
   }
 
+  private appendPcmChunk(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    this.pcmChunks.push(chunk);
+    this.pcmBufferedBytes += chunk.length;
+  }
+
+  private clearPcmBuffer(): void {
+    this.pcmChunks.length = 0;
+    this.pcmChunkOffset = 0;
+    this.pcmBufferedBytes = 0;
+  }
+
+  private compactPcmChunks(): void {
+    if (this.pcmChunkOffset === 0) return;
+    if (this.pcmChunkOffset >= this.pcmChunks.length) {
+      this.pcmChunks.length = 0;
+      this.pcmChunkOffset = 0;
+      return;
+    }
+    if (this.pcmChunkOffset >= 64 && this.pcmChunkOffset * 2 >= this.pcmChunks.length) {
+      this.pcmChunks.splice(0, this.pcmChunkOffset);
+      this.pcmChunkOffset = 0;
+    }
+  }
+
+  private takePcmFrame(): Buffer | null {
+    if (this.pcmBufferedBytes < PCM_FRAME_BYTES) return null;
+
+    const first = this.pcmChunks[this.pcmChunkOffset];
+    if (first.length >= PCM_FRAME_BYTES) {
+      const frame = first.subarray(0, PCM_FRAME_BYTES);
+      if (first.length === PCM_FRAME_BYTES) this.pcmChunkOffset++;
+      else this.pcmChunks[this.pcmChunkOffset] = first.subarray(PCM_FRAME_BYTES);
+      this.pcmBufferedBytes -= PCM_FRAME_BYTES;
+      this.compactPcmChunks();
+      return frame;
+    }
+
+    const frame = Buffer.allocUnsafe(PCM_FRAME_BYTES);
+    let copied = 0;
+    while (copied < PCM_FRAME_BYTES) {
+      const chunk = this.pcmChunks[this.pcmChunkOffset];
+      const length = Math.min(chunk.length, PCM_FRAME_BYTES - copied);
+      chunk.copy(frame, copied, 0, length);
+      copied += length;
+      if (length === chunk.length) this.pcmChunkOffset++;
+      else this.pcmChunks[this.pcmChunkOffset] = chunk.subarray(length);
+    }
+    this.pcmBufferedBytes -= PCM_FRAME_BYTES;
+    this.compactPcmChunks();
+    return frame;
+  }
+
   play(url: string, seekSeconds = 0, songDuration = 0): void {
     // 1. 停止当前所有播放，自增 sessionId 屏蔽旧回调 （
     this.stop();
@@ -287,8 +335,8 @@ export class AudioPlayer extends EventEmitter {
         return;
       }
       
-      this.pcmBuffer = Buffer.concat([this.pcmBuffer, chunk]);
-      if (this.pcmBuffer.length > AudioPlayer.BUFFER_HIGH_WATER && !this.ffmpegPaused && this.ffmpeg?.stdout) {
+      this.appendPcmChunk(chunk);
+      if (this.pcmBufferedBytes > AudioPlayer.BUFFER_HIGH_WATER && !this.ffmpegPaused && this.ffmpeg?.stdout) {
         this.ffmpeg.stdout.pause();
         this.ffmpegPaused = true;
       }
@@ -332,7 +380,8 @@ export class AudioPlayer extends EventEmitter {
       "$response.EnsureSuccessStatusCode()",
       "$sourceStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()",
       "$output = [System.IO.File]::Create($env:DL_OUT)",
-      "try { $sourceStream.CopyTo($output) } finally { $output.Dispose(); $sourceStream.Dispose(); $response.Dispose(); $client.Dispose() }",
+      "$buffer = New-Object byte[] 65536; [long]$total = 0",
+      "try { while (($read = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) { $total += $read; if ($total -gt [long]$env:DL_MAX_BYTES) { throw ('download exceeds limit: ' + $env:DL_MAX_BYTES + ' bytes') }; $output.Write($buffer, 0, $read) } } finally { $output.Dispose(); $sourceStream.Dispose(); $response.Dispose(); $client.Dispose() }",
     ].join("; ");
 
     this.logger.debug({ sessionId, tempFile }, "Downloading via PowerShell (jdymusic CDN)");
@@ -347,6 +396,7 @@ export class AudioPlayer extends EventEmitter {
           DL_OUT: tempFile,
           DL_UA: BROWSER_UA,
           DL_REFERER: "https://music.163.com/",
+          DL_MAX_BYTES: String(POWERSHELL_MAX_DOWNLOAD_BYTES),
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -427,8 +477,8 @@ export class AudioPlayer extends EventEmitter {
 
     this.ffmpeg.stdout!.on("data", (chunk: Buffer) => {
       if (this.sessionId !== sessionId) return;
-      this.pcmBuffer = Buffer.concat([this.pcmBuffer, chunk]);
-      if (this.pcmBuffer.length > AudioPlayer.BUFFER_HIGH_WATER && !this.ffmpegPaused && this.ffmpeg?.stdout) {
+      this.appendPcmChunk(chunk);
+      if (this.pcmBufferedBytes > AudioPlayer.BUFFER_HIGH_WATER && !this.ffmpegPaused && this.ffmpeg?.stdout) {
         this.ffmpeg.stdout.pause();
         this.ffmpegPaused = true;
       }
@@ -460,7 +510,7 @@ export class AudioPlayer extends EventEmitter {
    * External-PCM mode (Stage 2 go-librespot Spotify sidecar).
    *
    * Feeds an already-normalized 48kHz/s16le/stereo PCM Readable (the
-   * go-librespot FIFO -> ffmpeg output) straight into the existing pcmBuffer +
+   * go-librespot FIFO -> ffmpeg output) straight into the existing PCM chunk queue +
    * 20ms frame loop + Opus encoder + "frame" emission, WITHOUT spawning a
    * per-URL ffmpeg. The url play() path is left completely untouched.
    *
@@ -475,7 +525,7 @@ export class AudioPlayer extends EventEmitter {
    * (removes our listeners + pauses); it never destroys the shared stream.
    */
   playPcmStream(readable: Readable, opts: { onExternalEnd?: () => void } = {}): void {
-    // 1. Fence current playback: stop() bumps sessionId, clears pcmBuffer, kills
+    // 1. Fence current playback: stop() bumps sessionId, clears the PCM queue, kills
     //    any ffmpeg, and DETACHES (never destroys) any prior external stream.
     this.stop();
 
@@ -499,9 +549,9 @@ export class AudioPlayer extends EventEmitter {
     // refs are stored so detach can remove exactly these listeners (C2).
     const onData = (chunk: Buffer): void => {
       if (this.sessionId !== currentSessionId) return;
-      this.pcmBuffer = Buffer.concat([this.pcmBuffer, chunk]);
+      this.appendPcmChunk(chunk);
       if (
-        this.pcmBuffer.length > AudioPlayer.BUFFER_HIGH_WATER &&
+        this.pcmBufferedBytes > AudioPlayer.BUFFER_HIGH_WATER &&
         !this.ffmpegPaused &&
         this.externalStream === readable
       ) {
@@ -531,7 +581,7 @@ export class AudioPlayer extends EventEmitter {
     // The backend's SHARED stdout is reused across every track; a prior non-spotify
     // advance ran stop() -> detachExternalStream() which pause()d it (state.flowing =
     // false). Node's Readable.on('data') only auto-resumes when flowing !== false, so
-    // re-attaching a paused stream would leave it stuck: onData never fires, pcmBuffer
+    // re-attaching a paused stream would leave it stuck: onData never fires, the PCM queue
     // stays empty, and a later Spotify track plays only silence. resume() is safe/
     // idempotent on a first attach (never-paused/already-flowing) stream.
     readable.resume();
@@ -545,7 +595,7 @@ export class AudioPlayer extends EventEmitter {
    * CORRECTION C2: DETACH, never destroy. The external readable is the backend's
    * long-lived, SHARED ffmpeg stdout reused across every track; destroying it
    * would kill the sidecar pipe for all future tracks. Remove only the listeners
-   * WE added and pause the flow so stale PCM stops landing in pcmBuffer, then
+   * WE added and pause the flow so stale PCM stops landing in the PCM queue, then
    * clear the external-mode state.
    */
   private detachExternalStream(): void {
@@ -574,7 +624,7 @@ export class AudioPlayer extends EventEmitter {
     this.frameLoopRunning = false;
     
     // 立即清空缓冲区，确保切歌瞬间静音 （
-    this.pcmBuffer = Buffer.alloc(0);
+    this.clearPcmBuffer();
 
     if (this.ffmpeg) {
       const procToKill = this.ffmpeg;
@@ -655,7 +705,7 @@ export class AudioPlayer extends EventEmitter {
       if (this.state === "playing") this.sendNextFrame();
       else if (this.state === "paused") this.nextFrameTime = performance.now();
 
-      // 检测pcmBuffer不足PCM_FRAME_BYTES导致连续循环卡死：
+      // 检测 PCM 队列不足 PCM_FRAME_BYTES 导致连续循环卡死：
       // 条件1: FFmpeg仍在运行但缓冲区不足一帧，且连续多次无法获取数据
       // 条件2: 已播放时间接近歌曲结尾（最后5秒内）或未知时长
       const elapsed = this.getElapsed();
@@ -673,7 +723,7 @@ export class AudioPlayer extends EventEmitter {
       // unknown-duration stream would auto-advance ~5s later. Because the if is
       // now false while paused, the else resets emptyFrameAttempts to 0, so a
       // resumed healthy stream starts fresh and never ends instantly.
-      if (this.state === "playing" && !this.externalMode && this.ffmpeg !== null && this.pcmBuffer.length < PCM_FRAME_BYTES) {
+      if (this.state === "playing" && !this.externalMode && this.ffmpeg !== null && this.pcmBufferedBytes < PCM_FRAME_BYTES) {
         this.emptyFrameAttempts++;
         
         // End the track when FFmpeg has gone silent: quickly if we're near the
@@ -691,7 +741,7 @@ export class AudioPlayer extends EventEmitter {
           this.logger.info({
             sessionId: this.sessionId,
             emptyAttempts: this.emptyFrameAttempts,
-            bufferSize: this.pcmBuffer.length,
+            bufferSize: this.pcmBufferedBytes,
             elapsed: Math.round(elapsed),
             duration: this.currentSongDuration,
             remaining: Math.round(this.currentSongDuration - elapsed),
@@ -721,7 +771,7 @@ export class AudioPlayer extends EventEmitter {
 
       // R3-4: likewise gated on state==="playing" — a drained/EOF'd stream must
       // not emit trackEnd while paused; end-detection resumes on resume().
-      if (this.state === "playing" && !this.externalMode && !this.ffmpeg && this.pcmBuffer.length < PCM_FRAME_BYTES) {
+      if (this.state === "playing" && !this.externalMode && !this.ffmpeg && this.pcmBufferedBytes < PCM_FRAME_BYTES) {
         this.frameLoopRunning = false;
         // Outer gate guarantees state==="playing"; end directly (no !=="idle" guard).
         this.state = "idle";
@@ -736,17 +786,15 @@ export class AudioPlayer extends EventEmitter {
   }
 
   private sendNextFrame(): void {
-    if (this.pcmBuffer.length < PCM_FRAME_BYTES) {
+    const pcmFrame = this.takePcmFrame();
+    if (!pcmFrame) {
       // External mode: the sidecar PCM stream is long-lived and must NOT end on
       // a transient underrun. Emit an encoded silence frame so the 20ms voice
       // timeline stays continuous instead of returning (which would desync TS).
       if (this.externalMode) this.emitSilenceFrame();
       return;
     }
-    const pcmFrame = this.pcmBuffer.subarray(0, PCM_FRAME_BYTES);
-    this.pcmBuffer = this.pcmBuffer.subarray(PCM_FRAME_BYTES);
-
-    if (this.ffmpegPaused && this.pcmBuffer.length < AudioPlayer.BUFFER_LOW_WATER) {
+    if (this.ffmpegPaused && this.pcmBufferedBytes < AudioPlayer.BUFFER_LOW_WATER) {
       if (this.externalMode && this.externalStream) {
         this.externalStream.resume();
         this.ffmpegPaused = false;

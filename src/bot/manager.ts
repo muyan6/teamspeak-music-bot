@@ -64,13 +64,15 @@ export function normalizeServerAddress(
   defaultPort = 9987
 ): { host: string; port: number } {
   let host = (serverAddress ?? "").trim();
-  let port = defaultPort;
+  let port = Number.isInteger(defaultPort) && defaultPort > 0 && defaultPort <= 65_535
+    ? defaultPort
+    : 9987;
 
   if (host.startsWith("[")) {
     const closing = host.indexOf("]");
     if (closing > 0) {
       if (host[closing + 1] === ":") {
-        const rawPort = parseInt(host.slice(closing + 2), 10);
+        const rawPort = Number(host.slice(closing + 2));
         if (Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535) {
           port = rawPort;
         }
@@ -80,7 +82,7 @@ export function normalizeServerAddress(
   } else if (host.includes(":")) {
     const parts = host.split(":");
     if (parts.length === 2) {
-      const rawPort = parseInt(parts[1], 10);
+      const rawPort = Number(parts[1]);
       if (Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535) {
         host = parts[0];
         port = rawPort;

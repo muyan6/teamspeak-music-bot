@@ -76,6 +76,8 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
   private proc: ChildProcess | null = null;
   private ffmpeg: ChildProcess | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollInFlight = false;
+  private pollGeneration = 0;
   // I4 (§13): "did our track actually start playing?" watchdog handle (opaque —
   // produced by the injectable setTimeout seam). null when disarmed.
   private watchdogTimer: unknown = null;
@@ -158,7 +160,7 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
       throw new Error("Spotify not authorized (no access token) — sign in first");
     }
 
-    mkdirSync(this.opts.cacheDir, { recursive: true });
+    mkdirSync(this.opts.cacheDir, { recursive: true, mode: 0o700 });
 
     // Everything past here spawns children / opens the state poll. On any
     // failure (e.g. the device never appears), tear it all down via stop().
@@ -186,8 +188,8 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
       this.ffmpeg.stdin?.on("error", (err) => this.onPipeError(err));
 
       // 2. Spawn librespot: --backend pipe with NO --device => raw s16le/44100/2
-      //    on stdout, NO --passthrough (that would emit raw Ogg). --access-token
-      //    authenticates it as a Connect device controllable via the Web API.
+      //    on stdout, NO --passthrough (that would emit raw Ogg). The token is
+      //    supplied through LIBRESPOT_ACCESS_TOKEN so it does not appear in argv.
       const bin = findBinary();
       this.proc = spawn(
         bin,
@@ -198,13 +200,11 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
           "--format", "S16",
           "--cache", this.opts.cacheDir,
           "--device-type", "speaker",
-          // KNOWN LIMITATION (CWE-214): the live Spotify access token is passed in
-          // the child argv, so on a shared/multi-tenant host a co-located local
-          // process could read it via `ps` / /proc/<pid>/cmdline. Bounded (~1h token,
-          // needs local access) and `--access-token` is librespot's supported bootstrap.
-          "--access-token", token,
         ],
-        { stdio: ["ignore", "pipe", "pipe"] },
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, LIBRESPOT_ACCESS_TOKEN: token },
+        },
       );
       // stdout carries PCM — pipe it, never attach a data listener that consumes it.
       if (this.proc.stdout && this.ffmpeg.stdin) {
@@ -287,16 +287,22 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
   }
 
   private startPollLoop(): void {
+    if (this.pollTimer) return;
     const interval = this.deps.statePollIntervalMs ?? DEFAULT_STATE_POLL_MS;
+    const generation = this.pollGeneration;
     this.pollTimer = setInterval(() => {
-      void this.pollState();
+      if (generation !== this.pollGeneration || this.pollInFlight) return;
+      this.pollInFlight = true;
+      void this.pollState(generation).finally(() => {
+        this.pollInFlight = false;
+      });
     }, interval);
     // Don't keep the event loop / test process alive on account of the poll timer.
     this.pollTimer.unref?.();
   }
 
   /** One player-state poll iteration: updates position/metadata and detects track end. */
-  private async pollState(): Promise<void> {
+  private async pollState(generation = this.pollGeneration): Promise<void> {
     let state: PlaybackState | null;
     try {
       state = await this.connect.getPlaybackState();
@@ -304,6 +310,7 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
       this.log.debug({ err }, "getPlaybackState failed");
       return;
     }
+    if (generation !== this.pollGeneration) return;
 
     // C3.4: detection is armed ONLY by our own playTrack(). Until then a poll
     // must have NO side effects — no metadata/trackEnded emit and no mutation of
@@ -593,6 +600,8 @@ export class RustLibrespotBackend extends EventEmitter implements SpotifyAudioBa
 
   stop(): void {
     this.ready = false;
+    this.pollGeneration++;
+    this.pollInFlight = false;
     // Disarm the I4 degrade-to-skip watchdog so a stopped backend never emits.
     this.clearPlaybackWatchdog();
     // Clear the state poll interval FIRST so no poll fires mid-teardown.

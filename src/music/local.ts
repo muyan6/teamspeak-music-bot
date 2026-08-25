@@ -252,6 +252,7 @@ export class LocalMusicProvider implements MusicProvider {
   private records: LocalSongRecord[] = [];
   private readonly maxFiles: number;
   private readonly maxTotalBytes: number;
+  private searchTextById = new Map<string, string>();
   /** Ids that have been resolved for playback at least once; only these are
    *  eligible for reference-aware cleanup, so freshly uploaded files that are
    *  not yet queued/played survive in the search list. */
@@ -294,9 +295,23 @@ export class LocalMusicProvider implements MusicProvider {
       this.records = Array.isArray(parsed)
         ? parsed.filter((r) => r && typeof r.id === "string" && typeof r.filePath === "string")
         : [];
+      this.rebuildSearchIndex();
     } catch {
       this.records = [];
+      this.searchTextById.clear();
     }
+  }
+
+  private rebuildSearchIndex(): void {
+    this.searchTextById.clear();
+    for (const record of this.records) this.indexSearchRecord(record);
+  }
+
+  private indexSearchRecord(record: LocalSongRecord): void {
+    this.searchTextById.set(
+      record.id,
+      `${record.name} ${record.artist} ${record.album} ${record.originalName}`.toLowerCase(),
+    );
   }
 
   private saveIndex(): void {
@@ -401,6 +416,7 @@ export class LocalMusicProvider implements MusicProvider {
     };
 
     this.records.unshift(song);
+    this.indexSearchRecord(song);
     this.saveIndex();
     // Never evict the file we just accepted, even if every older file is still
     // queued — returning success for a file we deleted would be a phantom entry.
@@ -417,7 +433,7 @@ export class LocalMusicProvider implements MusicProvider {
     const q = query.trim().toLowerCase();
     const songs = this.records
       .filter((r) => existsSync(r.filePath))
-      .filter((r) => !q || `${r.name} ${r.artist} ${r.album} ${r.originalName}`.toLowerCase().includes(q))
+      .filter((r) => !q || this.searchTextById.get(r.id)?.includes(q))
       .slice(offset, offset + limit)
       .map((r) => this.toSong(r));
     return { songs, playlists: [], albums: [] };
@@ -509,6 +525,7 @@ export class LocalMusicProvider implements MusicProvider {
       if (existsSync(r.filePath)) return false;
     }
     this.records.splice(index, 1);
+    this.searchTextById.delete(r.id);
     this.playedIds.delete(r.id);
     this.retrying.delete(r.id);
     return true;

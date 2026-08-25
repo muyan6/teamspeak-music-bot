@@ -197,6 +197,20 @@ describe("normalizeServerAddress", () => {
       port: 12345,
     });
   });
+
+  it("falls back to the default port when the supplied default is invalid", () => {
+    expect(normalizeServerAddress("ts.example.com", 0)).toEqual({
+      host: "ts.example.com",
+      port: 9987,
+    });
+  });
+
+  it("does not accept trailing non-numeric text in an embedded port", () => {
+    expect(normalizeServerAddress("ts.example.com:9987oops", 9988)).toEqual({
+      host: "ts.example.com:9987oops",
+      port: 9988,
+    });
+  });
 });
 
 describe("BotManager.loadSavedBots — startup behavior", () => {
@@ -264,4 +278,3 @@ describe("BotManager.loadSavedBots — startup behavior", () => {
     allBots[0].disconnect();
   });
 });
-

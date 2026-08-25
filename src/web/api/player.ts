@@ -1,11 +1,19 @@
 import { Router } from "express";
+import type { Request, Response } from "express";
 import type { BotManager } from "../../bot/manager.js";
 import type { BotDatabase } from "../../data/database.js";
-import type { MusicProvider, Platform } from "../../music/provider.js";
+import type { MusicProvider, Platform, Song } from "../../music/provider.js";
 import type { Logger } from "../../logger.js";
+import type { BotInstance } from "../../bot/instance.js";
 import { parseCommand } from "../../bot/commands.js";
 import { requireBotAccess } from "../middleware/requirePermission.js";
 import { authorize } from "../middleware/authorize.js";
+
+declare module "express-serve-static-core" {
+  interface Request {
+    bot?: BotInstance;
+  }
+}
 
 export function createPlayerRouter(
   botManager: BotManager,
@@ -30,7 +38,7 @@ export function createPlayerRouter(
       res.status(404).json({ error: "Bot not found" });
       return;
     }
-    (req as any).bot = bot;
+    req.bot = bot;
     next();
   });
 
@@ -45,7 +53,12 @@ export function createPlayerRouter(
     "jellyfin",
   ]);
 
-  function selectPlatform(bot: any, platform: unknown, res: any): Platform | null {
+  function requestBot(req: Request): BotInstance {
+    if (!req.bot) throw new Error("Bot context is unavailable");
+    return req.bot;
+  }
+
+  function selectPlatform(bot: BotInstance, platform: unknown, res: Response): Platform | null {
     const requested = platform === undefined || platform === null || platform === ""
       ? undefined
       : platform;
@@ -63,11 +76,6 @@ export function createPlayerRouter(
     }
   }
 
-  function providerForRequest(bot: any, platform: unknown, res: any): MusicProvider | null {
-    const selected = selectPlatform(bot, platform, res);
-    return selected ? bot.getProviderFor(selected) : null;
-  }
-
   /** Map API platform string to the corresponding command flag. */
   const platformFlag = (platform: unknown): string => {
     if (platform === "bilibili") return "-b";
@@ -83,24 +91,24 @@ export function createPlayerRouter(
     return "";
   };
 
-  function isLocalAudioDisabled(bot: any, platform: unknown): boolean {
+  function isLocalAudioDisabled(bot: BotInstance, platform: unknown): boolean {
     return platform === "local" &&
       typeof bot.isLocalAudioEnabled === "function" &&
       !bot.isLocalAudioEnabled();
   }
 
-  function rejectDisabledLocalAudio(res: any): void {
+  function rejectDisabledLocalAudio(res: Response): void {
     res.status(403).json({ error: "本地音频播放已关闭" });
   }
 
-  function requesterName(req: any): string {
+  function requesterName(req: Request): string {
     const name = req.user?.username;
     return typeof name === "string" && name.trim() ? name.trim() : "游客";
   }
 
   router.post("/:botId/play", authorize({ capability: "player.control" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { query, platform } = req.body;
       if (!query) {
         res.status(400).json({ error: "query is required" });
@@ -121,7 +129,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/add", authorize({ capability: "player.queue", guestFlag: "addToQueue" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { query, platform } = req.body;
       if (!query) {
         res.status(400).json({ error: "query is required" });
@@ -140,9 +148,9 @@ export function createPlayerRouter(
     }
   });
 
-  const simpleCommand = (cmdStr: string) => async (req: any, res: any) => {
+  const simpleCommand = (cmdStr: string) => async (req: Request, res: Response) => {
     try {
-      const bot = req.bot;
+      const bot = requestBot(req);
       const cmd = parseCommand(cmdStr, "!")!;
       const response = await bot.executeCommand(cmd);
       res.json({ message: response });
@@ -160,7 +168,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/fm", authorize({ capability: "player.control", guestFlag: "playMode" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { platform } = req.body;
       const selectedPlatform = selectPlatform(bot, platform, res);
       if (selectedPlatform === null) return;
@@ -184,7 +192,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/volume", authorize({ capability: "player.control", guestFlag: "transport" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { volume } = req.body;
       // Reject bad input with a proper 4xx instead of letting cmdVol
       // return a "Usage:" string inside a 200 body — API clients can't
@@ -212,7 +220,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/mode", authorize({ capability: "player.control", guestFlag: "playMode" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { mode } = req.body;
       if (typeof mode !== "string" || !VALID_MODES.has(mode)) {
         res
@@ -230,14 +238,14 @@ export function createPlayerRouter(
 
   // Get current elapsed time (ground truth from server)
   router.get("/:botId/elapsed", (req, res) => {
-    const bot = (req as any).bot;
+      const bot = requestBot(req);
     res.json({ elapsed: bot.getPlayer().getElapsed() });
   });
 
   // Seek to position
   router.post("/:botId/seek", authorize({ capability: "player.control", guestFlag: "transport" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { position } = req.body; // seconds
       // typeof NaN === "number" and NaN < 0 is false, so a plain range
       // check lets NaN/Infinity through and later corrupts seekOffset.
@@ -255,13 +263,13 @@ export function createPlayerRouter(
   });
 
   router.get("/:botId/queue", (req, res) => {
-    const bot = (req as any).bot;
+      const bot = requestBot(req);
     res.json({ queue: bot.getQueue(), status: bot.getStatus() });
   });
 
   router.delete("/:botId/queue/:index", authorize({ capability: "player.queue", guestFlag: "removeClear" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const cmd = parseCommand(`!remove ${req.params.index}`, "!")!;
       const response = await bot.executeCommand(cmd);
       res.json({ message: response });
@@ -273,7 +281,7 @@ export function createPlayerRouter(
   // Jump to a specific index in the queue (without clearing it)
   router.post("/:botId/play-at", authorize({ capability: "player.control" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { index } = req.body;
       if (typeof index !== "number" || index < 0) {
         res.status(400).json({ error: "index is required" });
@@ -314,7 +322,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/playlist", authorize({ capability: "player.queue" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { playlistId, platform } = req.body;
       if (!playlistId || typeof playlistId !== "string") {
         res.status(400).json({ error: "playlistId is required" });
@@ -336,7 +344,7 @@ export function createPlayerRouter(
   // Respects current play mode (random = pick random first song)
   router.post("/:botId/play-playlist", authorize({ capability: "player.control", guestFlag: "playCollection" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { playlistId, platform } = req.body;
       if (!playlistId || typeof playlistId !== "string") {
         res.status(400).json({ error: "playlistId is required" });
@@ -360,7 +368,7 @@ export function createPlayerRouter(
       // large fraction of songs that return result=104003 (region/copyright
       // restricted). Batch-resolve URLs once and only queue the playable
       // ones, otherwise the playback retry loop wastes time guessing.
-      let queueable: { id: string }[] = songs;
+      let queueable: Song[] = songs;
       const totalCount = songs.length;
       const qqLike = provider as { getPlayableSongIds?: (ids: string[]) => Promise<Set<string> | null> };
       if (typeof qqLike.getPlayableSongIds === "function") {
@@ -419,7 +427,7 @@ export function createPlayerRouter(
   // Play an album by ID — mirrors play-playlist but calls getAlbumSongs
   router.post("/:botId/play-album", authorize({ capability: "player.control", guestFlag: "playCollection" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { albumId, platform } = req.body;
       if (!albumId || typeof albumId !== "string") {
         res.status(400).json({ error: "albumId is required" });
@@ -441,7 +449,7 @@ export function createPlayerRouter(
 
       // QQ-specific optimization: batch-resolve playable IDs to avoid
       // wasting retries on region/copyright-restricted tracks.
-      let queueable: { id: string }[] = songs;
+      let queueable: Song[] = songs;
       const totalCount = songs.length;
       const qqLike = provider as { getPlayableSongIds?: (ids: string[]) => Promise<Set<string> | null> };
       if (typeof qqLike.getPlayableSongIds === "function") {
@@ -499,7 +507,7 @@ export function createPlayerRouter(
   // requests can't interleave the queue mutation + playback (#119).
   router.post("/:botId/play-by-id", authorize({ capability: "player.control" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { songId, platform } = req.body;
       if (!songId || typeof songId !== "string") {
         res.status(400).json({ error: "songId is required" });
@@ -531,7 +539,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/play-song", authorize({ capability: "player.control" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { song } = req.body;
       if (!song || !song.id || !song.platform) {
         res.status(400).json({ error: "song object with id and platform is required" });
@@ -562,7 +570,7 @@ export function createPlayerRouter(
   // If nothing is playing, behaves like /play-song (start immediately).
   router.post("/:botId/play-next-song", authorize({ capability: "player.control", guestFlag: "playNext" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { song } = req.body;
       if (!song || !song.id || !song.platform) {
         res.status(400).json({ error: "song object with id and platform is required" });
@@ -612,7 +620,7 @@ export function createPlayerRouter(
   // clears the whole queue) — this is the guest-safe "play now".
   router.post("/:botId/play-now-song", authorize({ capability: "player.control", guestFlag: "playNow" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { song } = req.body;
       if (!song || !song.id || !song.platform) {
         res.status(400).json({ error: "song object with id and platform is required" });
@@ -647,7 +655,7 @@ export function createPlayerRouter(
 
   router.post("/:botId/add-song", authorize({ capability: "player.queue", guestFlag: "addToQueue" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { song } = req.body;
       if (!song || !song.id || !song.platform) {
         res.status(400).json({ error: "song object with id and platform is required" });
@@ -685,7 +693,7 @@ export function createPlayerRouter(
   // Add a song to queue by ID — metadata only
   router.post("/:botId/add-by-id", authorize({ capability: "player.queue", guestFlag: "addToQueue" }), async (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const { songId, platform } = req.body;
       if (!songId || typeof songId !== "string") {
         res.status(400).json({ error: "songId is required" });
@@ -730,13 +738,13 @@ export function createPlayerRouter(
   // --- Profile config endpoints ---
 
   router.get("/:botId/profile", (req, res) => {
-    const bot = (req as any).bot;
+      const bot = requestBot(req);
     res.json(bot.getProfileManager().getConfig());
   });
 
   router.put("/:botId/profile", authorize({ capability: "bot.manage" }), (req, res) => {
     try {
-      const bot = (req as any).bot;
+      const bot = requestBot(req);
       const pm = bot.getProfileManager();
       pm.updateConfig(req.body);
       if (database) {

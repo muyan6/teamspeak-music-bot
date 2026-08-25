@@ -47,7 +47,14 @@ export function setupWebSocket(
       .getAllBots()
       .filter((b) => visibleToClient(ws, b.id))
       .map((b) => b.getStatus());
-    ws.send(JSON.stringify({ type: "init", bots }));
+    try {
+      ws.send(JSON.stringify({ type: "init", bots }));
+    } catch (err) {
+      clients.delete(ws);
+      logger.warn({ err }, "Failed to send WebSocket init payload");
+      try { ws.terminate(); } catch { /* already closed */ }
+      return;
+    }
 
     ws.on("close", () => {
       clients.delete(ws);
@@ -157,23 +164,11 @@ export function setupWebSocket(
   };
   botManager.on("botInstanceRemoved", onBotInstanceRemoved);
 
-  /** Drop attached listeners whose bot is no longer in the manager. */
-  function reconcileAttachedBots(): void {
-    const liveIds = new Set(botManager.getAllBots().map((b) => b.id));
-    for (const id of Array.from(attachedBots.keys())) {
-      if (!liveIds.has(id)) detachBotListener(id);
-    }
-  }
-
-  // Safety net: periodically re-check in case any bot was missed
-  const intervalId = setInterval(() => {
-    reconcileAttachedBots();
-    ensureAllBotsAttached();
-  }, 5000);
+  // BotManager emits botInstance/botInstanceRemoved for every lifecycle change,
+  // so listener attachment is event-driven instead of scanning all bots forever.
   ensureAllBotsAttached();
 
   const cleanup = () => {
-    clearInterval(intervalId);
     botManager.removeListener("botInstance", onBotInstance);
     botManager.removeListener("botInstanceRemoved", onBotInstanceRemoved);
     // Clean up all attached listeners (detach from stored bot refs, not live map)

@@ -178,6 +178,11 @@ export class BotInstance extends EventEmitter {
   private voteSkipUsers = new Set<string>();
   private isAdvancing = false;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private idlePollTimer: ReturnType<typeof setTimeout> | null = null;
+  private jellyfinReportPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private occupancyRefreshInFlight = false;
+  private occupancyRefreshPending = false;
+  private occupancyGeneration = 0;
   private channelUserCount = 0;
   private autoPaused = false;
   /** True while the audible track is served by the Spotify sidecar (external
@@ -401,6 +406,9 @@ export class BotInstance extends EventEmitter {
       // this.connected was never flipped to true. Previously this handler
       // short-circuited on !this.connected, leaving player stuck as "playing".
       this.connected = false;
+      this.occupancyGeneration++;
+      this.occupancyRefreshPending = false;
+      this._clearLifecycleTimers();
       this.unregisterManagedVoiceClient(MANAGED_VOICE_CLIENT_RELEASE_GRACE_MS);
       this.voiceDucking.reset(true);
       // Cancel any pending live-queue snapshot BEFORE clearing the queue: a
@@ -527,8 +535,15 @@ export class BotInstance extends EventEmitter {
 
   private async refreshOccupancy(): Promise<void> {
     if (!this.connected) return;
+    if (this.occupancyRefreshInFlight) {
+      this.occupancyRefreshPending = true;
+      return;
+    }
+    this.occupancyRefreshInFlight = true;
+    const generation = this.occupancyGeneration;
     try {
       const clients = await this.tsClient.getClientsInChannel();
+      if (!this.connected || generation !== this.occupancyGeneration) return;
       const realListeners = clients.filter((c) => {
         if (c.id === this.tsClient.getClientId()) return false;
         if (c.type === 1) return false; // Exclude ServerQuery / Query bots
@@ -552,6 +567,14 @@ export class BotInstance extends EventEmitter {
       this.handleOccupancy(userCount);
     } catch (err) {
       this.logger.warn({ err }, "refreshOccupancy failed");
+    } finally {
+      this.occupancyRefreshInFlight = false;
+      if (this.occupancyRefreshPending) {
+        this.occupancyRefreshPending = false;
+        if (this.connected && generation === this.occupancyGeneration) {
+          void this.refreshOccupancy();
+        }
+      }
     }
   }
 
@@ -588,6 +611,9 @@ export class BotInstance extends EventEmitter {
   }
 
   disconnect(): void {
+    this.occupancyGeneration++;
+    this.occupancyRefreshPending = false;
+    this._clearLifecycleTimers();
     this._cancelIdleTimer();
     if (this.autoReturnTimer) {
       clearTimeout(this.autoReturnTimer);
@@ -660,12 +686,16 @@ export class BotInstance extends EventEmitter {
 
   private _startIdlePoller(): void {
     // 每 30 秒检查一次频道人数
-    const poll = async () => {
+    if (this.idlePollTimer) return;
+    const poll = () => {
+      this.idlePollTimer = null;
       if (!this.connected) return;
       void this.refreshOccupancy();
-      setTimeout(poll, 30_000);
+      this.idlePollTimer = setTimeout(poll, 30_000);
+      this.idlePollTimer.unref?.();
     };
-    setTimeout(poll, 30_000);
+    this.idlePollTimer = setTimeout(poll, 30_000);
+    this.idlePollTimer.unref?.();
   }
 
   async returnToDefaultChannel(): Promise<boolean> {
@@ -732,14 +762,15 @@ export class BotInstance extends EventEmitter {
   }
 
   /**
-   * ~10s Jellyfin progress reporting, following the _startIdlePoller pattern:
-   * a self-rescheduling timeout guarded by this.connected, so it needs no
-   * explicit teardown. When the current track is not (or no longer) a jellyfin
-   * item, onStop() idempotently closes any open report session.
+   * ~10s Jellyfin progress reporting. The timer is explicitly cleared on
+   * disconnect, and onStop() idempotently closes any open report session when
+   * the current track is not (or no longer) a Jellyfin item.
    */
   private _startJellyfinReportPoller(): void {
     if (!this.jellyfinReporter) return;
+    if (this.jellyfinReportPollTimer) return;
     const tick = () => {
+      this.jellyfinReportPollTimer = null;
       if (!this.connected) return;
       const reporter = this.jellyfinReporter!;
       const current = this.queue.current();
@@ -749,9 +780,22 @@ export class BotInstance extends EventEmitter {
       } else {
         reporter.onStop();
       }
-      setTimeout(tick, 10_000);
+      this.jellyfinReportPollTimer = setTimeout(tick, 10_000);
+      this.jellyfinReportPollTimer.unref?.();
     };
-    setTimeout(tick, 10_000);
+    this.jellyfinReportPollTimer = setTimeout(tick, 10_000);
+    this.jellyfinReportPollTimer.unref?.();
+  }
+
+  private _clearLifecycleTimers(): void {
+    if (this.idlePollTimer) {
+      clearTimeout(this.idlePollTimer);
+      this.idlePollTimer = null;
+    }
+    if (this.jellyfinReportPollTimer) {
+      clearTimeout(this.jellyfinReportPollTimer);
+      this.jellyfinReportPollTimer = null;
+    }
   }
 
   private _scheduleIdleCheck(): void {

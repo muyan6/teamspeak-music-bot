@@ -320,31 +320,41 @@ async function loadSettings() {
     const qRes = await axios.get('/api/provider/quality');
     neteaseQuality.value = qRes.data?.netease ?? 'exhigh';
     jellyfinQuality.value = qRes.data?.jellyfin ?? 'direct';
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('音质设置加载失败', 'error');
+  }
 }
 
 async function saveNeteaseQuality() {
   try {
     await axios.post('/api/provider/quality', { platform: 'netease', quality: neteaseQuality.value });
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('网易云音质保存失败', 'error');
+  }
 }
 
 async function saveJellyfinQuality() {
   try {
     await axios.post('/api/provider/quality', { platform: 'jellyfin', quality: jellyfinQuality.value });
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('Jellyfin 音质保存失败', 'error');
+  }
 }
 
 async function saveIdleTimeout() {
   try {
     await axios.post('/api/bot/settings', { idleTimeoutMinutes: idleTimeout.value });
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('闲置退出设置保存失败', 'error');
+  }
 }
 
 async function saveAutoPause() {
   try {
     await axios.post('/api/bot/settings', { autoPauseOnEmpty: autoPauseOnEmpty.value });
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('自动暂停设置保存失败', 'error');
+  }
 }
 
 async function saveVoiceDucking() {
@@ -374,7 +384,9 @@ async function saveLocalAudioEnabled() {
   try {
     const res = await axios.post('/api/bot/settings', { localAudioEnabled: localAudioEnabled.value });
     localAudioEnabled.value = res.data.localAudioEnabled ?? localAudioEnabled.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('本地音频设置保存失败', 'error');
+  }
 }
 
 async function saveSavedQueuesEnabled() {
@@ -382,35 +394,45 @@ async function saveSavedQueuesEnabled() {
     const res = await axios.post('/api/bot/settings', { savedQueuesEnabled: savedQueuesEnabled.value });
     savedQueuesEnabled.value = res.data.savedQueuesEnabled ?? savedQueuesEnabled.value;
     store.savedQueuesEnabled = savedQueuesEnabled.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('保存队列设置失败', 'error');
+  }
 }
 
 async function savePlayKeepsQueue() {
   try {
     const res = await axios.post('/api/bot/settings', { playKeepsQueue: playKeepsQueue.value });
     playKeepsQueue.value = res.data.playKeepsQueue ?? playKeepsQueue.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('播放队列设置保存失败', 'error');
+  }
 }
 
 async function saveLoudnessNormalization() {
   try {
     const res = await axios.post('/api/bot/settings', { loudnessNormalization: loudnessNormalization.value });
     loudnessNormalization.value = res.data.loudnessNormalization ?? loudnessNormalization.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('动态音量均衡设置保存失败', 'error');
+  }
 }
 
 async function saveAudioFade() {
   try {
     const res = await axios.post('/api/bot/settings', { audioFade: audioFade.value });
     audioFade.value = res.data.audioFade ?? audioFade.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('淡入淡出设置保存失败', 'error');
+  }
 }
 
 async function saveAutoSourceFallback() {
   try {
     const res = await axios.post('/api/bot/settings', { autoSourceFallback: autoSourceFallback.value });
     autoSourceFallback.value = res.data.autoSourceFallback ?? autoSourceFallback.value;
-  } catch { /* ignore */ }
+  } catch {
+    store.notify('备用音源设置保存失败', 'error');
+  }
 }
 
 onMounted(() => {
