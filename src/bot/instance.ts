@@ -529,11 +529,19 @@ export class BotInstance extends EventEmitter {
     if (!this.connected) return;
     try {
       const clients = await this.tsClient.getClientsInChannel();
-      const userCount = occupancyFromClientList(clients.length);
+      const realListeners = clients.filter((c) => {
+        if (c.id === this.tsClient.getClientId()) return false;
+        if (c.type === 1) return false; // Exclude ServerQuery / Query bots
+        if (c.uid && this.managedVoiceClients.hasClientUid(c.uid)) return false; // Exclude other managed music bots
+        if (this.managedVoiceClients.has(this.voiceServerScope, c.id)) return false;
+        return true;
+      });
+      const userCount = realListeners.length;
       this.logger.info(
         {
           channelId: this.tsClient.getChannelId().toString(),
           clientsInChannel: clients.length,
+          listeners: realListeners.map((l) => ({ id: l.id, name: l.nickname, type: l.type })),
           otherUsers: userCount,
           playerState: this.player.getState(),
           autoPauseOnEmpty: this.config.autoPauseOnEmpty,

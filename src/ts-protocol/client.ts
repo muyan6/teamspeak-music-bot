@@ -653,7 +653,9 @@ export class TS3Client extends EventEmitter {
 
     try {
       const list = await listClients(this.client);
-      if (Array.isArray(list) && list.length > 0) {
+      if (Array.isArray(list)) {
+        // Authoritative list from server: clear stale entries and synchronize
+        this.visibleClients.clear();
         for (const item of list) {
           this.visibleClients.set(item.id, item);
         }
@@ -667,10 +669,9 @@ export class TS3Client extends EventEmitter {
         const myChannelId = this.getChannelId();
         const myChannelStr = myChannelId.toString();
 
-        const inChannel = list.filter(
+        return list.filter(
           (c) => c.channelID !== undefined && c.channelID.toString() === myChannelStr
         );
-        if (inChannel.length > 0) return inChannel;
       }
     } catch {
       // Fall through to memory cache if listClients fails
