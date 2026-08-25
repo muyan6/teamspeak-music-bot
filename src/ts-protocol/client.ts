@@ -602,14 +602,22 @@ export class TS3Client extends EventEmitter {
 
     const isNumeric = /^\d+$/.test(channelName);
     if (isNumeric) {
+      const targetCid = BigInt(channelName);
+      if (this.currentChannelId === targetCid) {
+        return;
+      }
       try {
-        await clientMove(this.client, this.clientId, BigInt(channelName), password);
-        this.currentChannelId = BigInt(channelName);
+        await clientMove(this.client, this.clientId, targetCid, password);
+        this.currentChannelId = targetCid;
         try {
           await this.sendCommandNoWait(`channelsubscribe cid=${channelName}`);
         } catch {}
         this.logger.info({ channelName }, "Joined channel");
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.id === "770" || String(err?.message || "").includes("already member of channel")) {
+          this.currentChannelId = targetCid;
+          return;
+        }
         this.logger.error({ err, channelName }, "Failed to join channel");
       }
       return;
@@ -624,15 +632,27 @@ export class TS3Client extends EventEmitter {
         return;
       }
 
-      await clientMove(this.client, this.clientId, channel.id, password);
-      this.currentChannelId = channel.id;
+      if (this.currentChannelId === channel.id) {
+        return;
+      }
+
       try {
-        await this.sendCommandNoWait(`channelsubscribe cid=${channel.id}`);
-      } catch {}
-      this.logger.info(
-        { channelName, cid: channel.id.toString() },
-        "Joined channel"
-      );
+        await clientMove(this.client, this.clientId, channel.id, password);
+        this.currentChannelId = channel.id;
+        try {
+          await this.sendCommandNoWait(`channelsubscribe cid=${channel.id}`);
+        } catch {}
+        this.logger.info(
+          { channelName, cid: channel.id.toString() },
+          "Joined channel"
+        );
+      } catch (err: any) {
+        if (err?.id === "770" || String(err?.message || "").includes("already member of channel")) {
+          this.currentChannelId = channel.id;
+          return;
+        }
+        this.logger.error({ err, channelName }, "Failed to join channel");
+      }
     } catch (err) {
       this.logger.error({ err, channelName }, "Failed to join channel");
     }
