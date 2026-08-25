@@ -651,6 +651,31 @@ export class TS3Client extends EventEmitter {
   async getClientsInChannel(): Promise<ClientInfo[]> {
     if (!this.client || this.clientId === 0) return [];
 
+    try {
+      const list = await listClients(this.client);
+      if (Array.isArray(list) && list.length > 0) {
+        for (const item of list) {
+          this.visibleClients.set(item.id, item);
+        }
+
+        // Dynamically resolve the bot's current channel from the authoritative client list
+        const botSelf = list.find((c) => c.id === this.clientId);
+        if (botSelf && botSelf.channelID && botSelf.channelID > 0n) {
+          this.currentChannelId = botSelf.channelID;
+        }
+
+        const myChannelId = this.getChannelId();
+        const myChannelStr = myChannelId.toString();
+
+        const inChannel = list.filter(
+          (c) => c.channelID !== undefined && c.channelID.toString() === myChannelStr
+        );
+        if (inChannel.length > 0) return inChannel;
+      }
+    } catch {
+      // Fall through to memory cache if listClients fails
+    }
+
     if (this.currentChannelId === 0n) {
       try {
         const info = await getClientInfo(this.client, this.clientId);
@@ -664,21 +689,6 @@ export class TS3Client extends EventEmitter {
     const myChannelId = this.getChannelId();
     if (myChannelId === 0n) return [];
     const myChannelStr = myChannelId.toString();
-
-    try {
-      const list = await listClients(this.client);
-      if (Array.isArray(list) && list.length > 0) {
-        for (const item of list) {
-          this.visibleClients.set(item.id, item);
-        }
-        const inChannel = list.filter(
-          (c) => c.channelID !== undefined && c.channelID.toString() === myChannelStr
-        );
-        if (inChannel.length > 0) return inChannel;
-      }
-    } catch {
-      // Fall through to memory cache if listClients fails
-    }
 
     if (this.clientId > 0) {
       this.visibleClients.set(this.clientId, {
@@ -766,9 +776,12 @@ export class TS3Client extends EventEmitter {
 
   /** The current channel ID of this client. */
   getChannelId(): bigint {
-    if (this.currentChannelId !== 0n) return this.currentChannelId;
-    if (!this.client) return 0n;
-    return BigInt(this.client.channelID() ?? 0n);
+    const libCid = this.client ? BigInt(this.client.channelID() ?? 0n) : 0n;
+    if (libCid > 0n) {
+      this.currentChannelId = libCid;
+      return libCid;
+    }
+    return this.currentChannelId;
   }
 
   private voiceFramesSent = 0;
