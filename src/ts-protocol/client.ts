@@ -666,32 +666,18 @@ export class TS3Client extends EventEmitter {
     const myChannelStr = myChannelId.toString();
 
     try {
-      const resp = await this.client.execCommandWithResponse(
-        `channelclientlist cid=${myChannelStr}`,
-        2000
-      );
-      if (resp && Array.isArray(resp) && resp.length > 0) {
-        const clients: ClientInfo[] = [];
-        for (const item of resp) {
-          const clid = parseInt(item.clid ?? "0", 10);
-          if (clid > 0) {
-            const clientType = parseInt(item.client_type ?? "0", 10);
-            const clientInfo: ClientInfo = {
-              id: clid,
-              nickname: item.client_nickname ?? "",
-              uid: item.client_unique_identifier ?? "",
-              serverGroups: item.client_servergroups ? item.client_servergroups.split(",") : [],
-              channelID: myChannelId,
-              type: clientType,
-            };
-            this.visibleClients.set(clid, clientInfo);
-            clients.push(clientInfo);
-          }
+      const list = await listClients(this.client);
+      if (Array.isArray(list) && list.length > 0) {
+        for (const item of list) {
+          this.visibleClients.set(item.id, item);
         }
-        if (clients.length > 0) return clients;
+        const inChannel = list.filter(
+          (c) => c.channelID !== undefined && c.channelID.toString() === myChannelStr
+        );
+        if (inChannel.length > 0) return inChannel;
       }
     } catch {
-      // Fall through to memory cache if channelclientlist is not supported
+      // Fall through to memory cache if listClients fails
     }
 
     if (this.clientId > 0) {
