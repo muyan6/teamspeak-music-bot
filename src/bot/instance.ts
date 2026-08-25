@@ -440,6 +440,7 @@ export class BotInstance extends EventEmitter {
       this.autoPaused = false;
       this._startIdlePoller();
       this._startJellyfinReportPoller();
+      void this.refreshOccupancy();
     });
 
     this.tsClient.on("voiceActivity", (activity: TS3VoiceActivity) => {
