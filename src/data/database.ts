@@ -255,7 +255,7 @@ function initTables(db: Database.Database): void {
       defaultChannel TEXT NOT NULL,
       channelId TEXT NOT NULL DEFAULT '',
       channelPassword TEXT NOT NULL,
-      autoStart INTEGER NOT NULL DEFAULT 0,
+      autoStart INTEGER NOT NULL DEFAULT 1,
       serverProtocol TEXT NOT NULL DEFAULT '',
       ts6ApiKey TEXT NOT NULL DEFAULT '',
       serverPassword TEXT NOT NULL DEFAULT '',
@@ -381,6 +381,18 @@ export function backfillMemberPermissions(db: Database.Database): void {
 }
 
 /**
+ * One-time backfill: ensure existing bots created before autoStart persistence
+ * was restored are set to autoStart = 1 (active) so they auto-connect on boot.
+ */
+export function backfillAutoStart(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)`);
+  const done = db.prepare("SELECT value FROM schema_meta WHERE key = 'auto_start_backfill_done'").get();
+  if (done) return;
+  db.exec("UPDATE bot_instances SET autoStart = 1");
+  db.prepare("INSERT INTO schema_meta (key, value) VALUES ('auto_start_backfill_done', '1')").run();
+}
+
+/**
  * Ensure the reserved guest principal exists. Idempotent via the PK on
  * `users.id`. This row only backs login-less guest sessions; it is excluded
  * from countUsers()/listUsers() so it never interferes with first-run setup
@@ -402,6 +414,7 @@ export function createDatabase(dbPath: string): BotDatabase {
   initTables(db);
   migrateSchema(db);
   backfillMemberPermissions(db);
+  backfillAutoStart(db);
   ensureGuestUser(db);
 
   const insertHistory = db.prepare(`

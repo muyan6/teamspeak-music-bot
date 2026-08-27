@@ -233,7 +233,7 @@ export class BotManager extends EventEmitter {
       defaultChannel: params.defaultChannel ?? "",
       channelId: params.channelId ?? "",
       channelPassword: params.channelPassword ?? "",
-      autoStart: params.autoStart ?? false,
+      autoStart: params.autoStart ?? true,
       serverProtocol: params.serverProtocol ?? "",
       ts6ApiKey: params.ts6ApiKey ?? "",
       serverPassword: params.serverPassword ?? "",

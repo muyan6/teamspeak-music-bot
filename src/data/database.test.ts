@@ -377,4 +377,35 @@ describe("guest principal migration", () => {
     d.db.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("backfills autoStart = 1 for existing bots without autoStart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmb-db3-"));
+    const p = join(dir, "t.db");
+    const d1 = createDatabase(p);
+    // Explicitly set autoStart to 0 and remove marker to simulate pre-migration DB
+    d1.db.exec("UPDATE bot_instances SET autoStart = 0");
+    d1.db.exec("DELETE FROM schema_meta WHERE key = 'auto_start_backfill_done'");
+    d1.saveBotInstance({
+      id: "legacy-bot",
+      name: "Legacy",
+      serverAddress: "127.0.0.1",
+      serverPort: 9987,
+      nickname: "leg",
+      defaultChannel: "",
+      channelId: "",
+      channelPassword: "",
+      autoStart: false,
+      serverProtocol: "",
+      ts6ApiKey: "",
+      serverPassword: "",
+    });
+    d1.db.close();
+
+    const d2 = createDatabase(p);
+    const bots = d2.getBotInstances();
+    const legacy = bots.find((b) => b.id === "legacy-bot");
+    expect(legacy?.autoStart).toBe(true);
+    d2.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
