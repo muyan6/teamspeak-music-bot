@@ -877,18 +877,24 @@ export class BotInstance extends EventEmitter {
     }
   }
 
-  private _scheduleAutoReconnect(): void {
+  scheduleAutoReconnect(initialDelayMs?: number): void {
+    this.manualDisconnect = false;
+    this.connected = false;
+    this._scheduleAutoReconnect(initialDelayMs);
+  }
+
+  private _scheduleAutoReconnect(initialDelayMs?: number): void {
     if (this.manualDisconnect || this.connected) return;
     this._cancelReconnect();
 
     // Exponential backoff: 3s, 5s, 10s, 20s, 30s, capped at 60s
     const delays = [3000, 5000, 10000, 20000, 30000];
-    const delay = delays[this.reconnectAttempts] ?? 60000;
+    const delay = initialDelayMs ?? delays[this.reconnectAttempts] ?? 60000;
     this.reconnectAttempts++;
 
     this.logger.warn(
       { attempt: this.reconnectAttempts, nextDelayMs: delay, botId: this.id },
-      "Unexpected disconnect detected, scheduling auto-reconnect",
+      "Scheduling auto-reconnect",
     );
 
     this.autoReconnectTimer = setTimeout(() => {

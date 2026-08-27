@@ -498,12 +498,13 @@ export class BotManager extends EventEmitter {
         } catch (err) {
           this.logger.error(
             { err, botId: saved.id, name: saved.name },
-            "Failed to auto-connect bot on startup (start manually from WebUI)"
+            "Failed to auto-connect bot on startup (will retry in background)"
           );
+          bot.scheduleAutoReconnect(3000);
         }
 
         // Stagger connections to avoid overwhelming the TS server
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       } else {
         this.logger.info(
           { botId: saved.id, name: saved.name },
