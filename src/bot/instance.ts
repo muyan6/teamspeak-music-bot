@@ -2309,10 +2309,16 @@ export class BotInstance extends EventEmitter {
   }
 
   private extractId(input: string): string {
-    const match = input.match(/[?&]id=(\d+)/);
-    if (match) return match[1];
-    const pathMatch = input.match(/\/(\d+)/);
-    if (pathMatch) return pathMatch[1];
+    const trimmed = input.trim();
+    if (/^https?:\/\//i.test(trimmed)) {
+      const match = trimmed.match(/[?&]id=(\d+)/);
+      if (match) return match[1];
+      const pathMatch = trimmed.match(/\/(\d+)(?:[/?#]|$)/);
+      if (pathMatch) return pathMatch[1];
+    } else {
+      const match = trimmed.match(/[?&]id=(\d+)/);
+      if (match) return match[1];
+    }
     return input;
   }
 

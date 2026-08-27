@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { BotProfileManager } from "./profile.js";
+import { BotProfileManager, isSafeCoverUrl } from "./profile.js";
 import type { TS3Client } from "../ts-protocol/client.js";
 import type { QueuedSong } from "../audio/queue.js";
 
@@ -202,3 +202,43 @@ describe("BotProfileManager loadCustomAvatar (pre-connect load, #148)", () => {
     expect(ts.uploadCalls[0].equals(Buffer.from([2, 2]))).toBe(true);
   });
 });
+
+describe("isSafeCoverUrl SSRF guard", () => {
+  it("allows valid public HTTPS and HTTP URLs", () => {
+    expect(isSafeCoverUrl("https://y.gtimg.cn/music/photo_new/T002R300x300M00000.jpg")).toBe(true);
+    expect(isSafeCoverUrl("http://p1.music.126.net/abc/123.jpg")).toBe(true);
+  });
+
+  it("blocks localhost and loopback IPv4/IPv6", () => {
+    expect(isSafeCoverUrl("http://localhost:8080/secret")).toBe(false);
+    expect(isSafeCoverUrl("http://127.0.0.1/admin")).toBe(false);
+    expect(isSafeCoverUrl("http://127.1.2.3:3000/")).toBe(false);
+    expect(isSafeCoverUrl("http://[::1]:8080/")).toBe(false);
+    expect(isSafeCoverUrl("http://0.0.0.0/")).toBe(false);
+  });
+
+  it("blocks private RFC 1918 and internal networks", () => {
+    expect(isSafeCoverUrl("http://192.168.1.1/router")).toBe(false);
+    expect(isSafeCoverUrl("http://10.0.0.5/internal")).toBe(false);
+    expect(isSafeCoverUrl("http://172.16.0.1/")).toBe(false);
+    expect(isSafeCoverUrl("http://172.31.255.255/")).toBe(false);
+    expect(isSafeCoverUrl("http://server.local/")).toBe(false);
+    expect(isSafeCoverUrl("http://backend.internal/")).toBe(false);
+  });
+
+  it("blocks cloud provider instance metadata URLs", () => {
+    expect(isSafeCoverUrl("http://169.254.169.254/latest/meta-data/")).toBe(false);
+  });
+
+  it("blocks non-HTTP protocols", () => {
+    expect(isSafeCoverUrl("file:///etc/passwd")).toBe(false);
+    expect(isSafeCoverUrl("gopher://127.0.0.1:6379/")).toBe(false);
+    expect(isSafeCoverUrl("ftp://example.com/file")).toBe(false);
+  });
+
+  it("rejects invalid or empty URLs", () => {
+    expect(isSafeCoverUrl("")).toBe(false);
+    expect(isSafeCoverUrl("not a url")).toBe(false);
+  });
+});
+

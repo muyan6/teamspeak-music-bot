@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -339,7 +339,9 @@ export class LocalMusicProvider implements MusicProvider {
   }
 
   private saveIndex(): void {
-    writeFileSync(this.indexPath, JSON.stringify(this.records, null, 2), "utf8");
+    const tempPath = `${this.indexPath}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(this.records, null, 2), "utf8");
+    renameSync(tempPath, this.indexPath);
   }
 
   async uploadAudio(input: {

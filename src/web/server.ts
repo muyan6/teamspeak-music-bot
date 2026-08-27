@@ -119,19 +119,24 @@ export function createWebServer(options: WebServerOptions): WebServer {
     res.json({ publicUrl: raw ? raw.replace(/\/+$/, "") : null });
   });
 
-  // Anti-DoS: throttle expensive (bcrypt) auth endpoints.
+  // ─── CSRF protection for all mutating API requests ──────────────────────
+  app.use("/api", csrfOriginCheck);
+
+  // Anti-DoS: throttle auth endpoints.
   // 5 req per minute per IP for /login (capacity 5, refill 5/60 = ~0.083/sec).
   // 3 req per minute per IP for /setup (more limited; first-run is rare).
+  // 10 req per minute per IP for /guest.
   const loginLimit = createRateLimit({ capacity: 5, refillPerSec: 5 / 60 });
   const setupLimit = createRateLimit({ capacity: 3, refillPerSec: 3 / 60 });
+  const guestLimit = createRateLimit({ capacity: 10, refillPerSec: 10 / 60 });
   app.use("/api/session/login", loginLimit);
   app.use("/api/session/setup", setupLimit);
+  app.use("/api/session/guest", guestLimit);
 
   app.use("/api/session", createSessionRouter(users, sessions, audit, logger, permissions, () => options.config.guestMode));
 
   // ─── Gates for everything else under /api ───────────────────────────────
   const requireAuth = createRequireAuth(sessions, permissions, () => options.config.guestMode);
-  app.use("/api", csrfOriginCheck);
   app.use("/api", requireAuth);
 
   // ─── Protected routes ───────────────────────────────────────────────────

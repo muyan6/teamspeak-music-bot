@@ -25,6 +25,7 @@ export type StoredSong = Omit<QueuedSong, "url">;
 export interface SavedQueueMeta {
   id: number;
   ownerId: string;
+  creatorId?: string;
   name: string;
   songCount: number;
   createdAt: string;
@@ -150,7 +151,7 @@ export interface BotDatabase {
   getFavorites(userId: string): FavoritePlaylist[];
   isFavorited(userId: string, playlistId: string, platform: string): boolean;
   // Saved queues (Feature 1) — upsert by (ownerId, name), capped.
-  saveQueue(ownerId: string, name: string, songs: StoredSong[]): SavedQueue;
+  saveQueue(ownerId: string, name: string, songs: (StoredSong | QueuedSong)[], creatorId?: string): SavedQueue;
   listSavedQueues(ownerId: string, includeShared: boolean): SavedQueueMeta[];
   getSavedQueue(id: number): SavedQueue | null;
   deleteSavedQueue(id: number): boolean;
@@ -219,6 +220,12 @@ function migrateSchema(db: Database.Database): void {
   const historyColNames = historyColumns.map((c) => c.name);
   if (!historyColNames.includes("requestedBy")) {
     db.exec("ALTER TABLE play_history ADD COLUMN requestedBy TEXT NOT NULL DEFAULT ''");
+  }
+
+  const savedQueuesColumns = db.prepare("PRAGMA table_info(saved_queues)").all() as Array<{ name: string }>;
+  const savedQueuesColNames = savedQueuesColumns.map((c) => c.name);
+  if (!savedQueuesColNames.includes("creatorId")) {
+    db.exec("ALTER TABLE saved_queues ADD COLUMN creatorId TEXT NOT NULL DEFAULT ''");
   }
 }
 
@@ -327,6 +334,7 @@ function initTables(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS saved_queues (
       id        INTEGER PRIMARY KEY AUTOINCREMENT,
       ownerId   TEXT NOT NULL,
+      creatorId TEXT NOT NULL DEFAULT '',
       name      TEXT NOT NULL,
       songs     TEXT NOT NULL,
       songCount INTEGER NOT NULL DEFAULT 0,
@@ -491,10 +499,11 @@ export function createDatabase(dbPath: string): BotDatabase {
     }
   };
   const rowToSavedMeta = (r: {
-    id: number; ownerId: string; name: string; songCount: number; createdAt: string; updatedAt: string;
+    id: number; ownerId: string; creatorId?: string; name: string; songCount: number; createdAt: string; updatedAt: string;
   }): SavedQueueMeta => ({
     id: r.id,
     ownerId: r.ownerId,
+    creatorId: r.creatorId ?? "",
     name: r.name,
     songCount: r.songCount,
     createdAt: r.createdAt,
@@ -502,9 +511,10 @@ export function createDatabase(dbPath: string): BotDatabase {
   });
 
   const upsertSavedQueue = db.prepare(`
-    INSERT INTO saved_queues (ownerId, name, songs, songCount)
-    VALUES (@ownerId, @name, @songs, @songCount)
+    INSERT INTO saved_queues (ownerId, creatorId, name, songs, songCount)
+    VALUES (@ownerId, @creatorId, @name, @songs, @songCount)
     ON CONFLICT(ownerId, name) DO UPDATE SET
+      creatorId = CASE WHEN @creatorId != '' THEN @creatorId ELSE saved_queues.creatorId END,
       songs = excluded.songs,
       songCount = excluded.songCount,
       updatedAt = datetime('now')
@@ -519,10 +529,10 @@ export function createDatabase(dbPath: string): BotDatabase {
     "SELECT COUNT(*) AS c FROM saved_queues WHERE ownerId = ?",
   );
   const listSavedQueuesOwn = db.prepare(
-    "SELECT id, ownerId, name, songCount, createdAt, updatedAt FROM saved_queues WHERE ownerId = ? ORDER BY updatedAt DESC",
+    "SELECT id, ownerId, creatorId, name, songCount, createdAt, updatedAt FROM saved_queues WHERE ownerId = ? ORDER BY updatedAt DESC",
   );
   const listSavedQueuesShared = db.prepare(
-    "SELECT id, ownerId, name, songCount, createdAt, updatedAt FROM saved_queues WHERE ownerId = ? OR ownerId = ? ORDER BY updatedAt DESC",
+    "SELECT id, ownerId, creatorId, name, songCount, createdAt, updatedAt FROM saved_queues WHERE ownerId = ? OR ownerId = ? ORDER BY updatedAt DESC",
   );
   const selectSavedQueueById = db.prepare("SELECT * FROM saved_queues WHERE id = ?");
   const deleteSavedQueueById = db.prepare("DELETE FROM saved_queues WHERE id = ?");
@@ -668,7 +678,7 @@ export function createDatabase(dbPath: string): BotDatabase {
       return row !== undefined;
     },
 
-    saveQueue(ownerId, name, songs) {
+    saveQueue(ownerId, name, songs, creatorId = "") {
       if (songs.length > MAX_QUEUE_SONGS) {
         throw new Error(`保存失败：歌曲数量超过上限 ${MAX_QUEUE_SONGS}`);
       }
@@ -690,6 +700,7 @@ export function createDatabase(dbPath: string): BotDatabase {
       }
       upsertSavedQueue.run({
         ownerId,
+        creatorId: creatorId || (ownerId !== SHARED_QUEUE_OWNER ? ownerId : ""),
         name,
         songs: JSON.stringify(stripped),
         songCount: stripped.length,

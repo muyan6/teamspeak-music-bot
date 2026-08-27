@@ -86,12 +86,13 @@ export function createSavedQueuesRouter(
     }
     const ownerId = shared === true ? SHARED_QUEUE_OWNER : userId;
     try {
-      const saved = database.saveQueue(ownerId, name.trim(), songs);
+      const saved = database.saveQueue(ownerId, name.trim(), songs, userId);
       logger.info({ userId, ownerId, name: saved.name, count: saved.songCount }, "saved queue upserted");
       res.json({
         queue: {
           id: saved.id,
           ownerId: saved.ownerId,
+          creatorId: saved.creatorId,
           name: saved.name,
           songCount: saved.songCount,
         },
@@ -142,14 +143,26 @@ export function createSavedQueuesRouter(
 
   // DELETE /:id — delete a saved queue (own or shared only).
   router.delete("/:id", (req, res) => {
-    const userId = req.user!.id;
+    const user = req.user!;
+    const userId = user.id;
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "invalid id" });
       return;
     }
     const sq = database.getSavedQueue(id);
-    if (!sq || (sq.ownerId !== userId && sq.ownerId !== SHARED_QUEUE_OWNER)) {
+    if (!sq) {
+      res.status(404).json({ error: "not found" });
+      return;
+    }
+    if (sq.ownerId === SHARED_QUEUE_OWNER) {
+      const isCreator = sq.creatorId && sq.creatorId === userId;
+      const isAdmin = user.role === "admin";
+      if (!isAdmin && !isCreator) {
+        res.status(403).json({ error: "只有管理员或创建者可以删除共享队列" });
+        return;
+      }
+    } else if (sq.ownerId !== userId) {
       res.status(404).json({ error: "not found" });
       return;
     }

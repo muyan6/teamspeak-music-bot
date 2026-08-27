@@ -283,8 +283,8 @@ export function createPlayerRouter(
     try {
       const bot = requestBot(req);
       const { index } = req.body;
-      if (typeof index !== "number" || index < 0) {
-        res.status(400).json({ error: "index is required" });
+      if (!Number.isInteger(index) || index < 0) {
+        res.status(400).json({ error: "Valid integer index is required" });
         return;
       }
       // Serialize the index-validation + stop/reset/playAt/resolveAndPlay so a

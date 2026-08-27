@@ -18,11 +18,13 @@ export function createCookieStore(cookieDir: string): CookieStore {
   return {
     save(platform: CookiePlatform, cookie: string): void {
       const filePath = path.join(cookieDir, `${platform}.json`);
+      const tempPath = `${filePath}.tmp`;
       fs.writeFileSync(
-        filePath,
+        tempPath,
         JSON.stringify({ cookie, updatedAt: new Date().toISOString() }),
         { encoding: "utf-8", mode: 0o600 }
       );
+      fs.renameSync(tempPath, filePath);
     },
 
     load(platform: CookiePlatform): string {

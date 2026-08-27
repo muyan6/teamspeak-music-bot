@@ -213,7 +213,7 @@ export function createMusicRouter(
       // Server-side pagination: offset lets the web load past the first page.
       // Clamp to >= 0 so a bad/negative value falls back to the first page.
       const parsedOffset = Math.max(0, parseInt(offset as string) || 0);
-      const parsedLimit = parseInt(limit as string) || 20;
+      const parsedLimit = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
       const cacheKey = `${String(platform ?? "default")}:${String(q).trim().toLowerCase()}:${parsedLimit}:${parsedOffset}`;
       const cached = searchCache.get(cacheKey);
       if (cached) {
@@ -240,7 +240,7 @@ export function createMusicRouter(
         res.status(400).json({ error: "q (query) is required" });
         return;
       }
-      const parsedLimit = parseInt(limit as string) || 20;
+      const parsedLimit = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
       // Spotify is intentionally EXCLUDED from unified /search/all in Stage 1:
       // its tracks are metadata-only (not yet playable) until the librespot audio
       // backend lands (Stage 2/3), so surfacing them in the default all-sources

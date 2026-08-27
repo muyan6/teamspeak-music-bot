@@ -477,17 +477,68 @@ export function loadConfig(path: string): BotConfig {
         : defaults.autoSourceFallback;
 
     return {
-      ...defaults,
-      ...partial,
+      webPort:
+        typeof partial.webPort === "number" &&
+        Number.isInteger(partial.webPort) &&
+        partial.webPort > 0 &&
+        partial.webPort <= 65535
+          ? partial.webPort
+          : defaults.webPort,
+      locale: partial.locale === "en" || partial.locale === "zh" ? partial.locale : defaults.locale,
+      theme: partial.theme === "light" || partial.theme === "dark" ? partial.theme : defaults.theme,
+      commandPrefix:
+        typeof partial.commandPrefix === "string" && partial.commandPrefix.length > 0
+          ? partial.commandPrefix
+          : defaults.commandPrefix,
+      commandAliases:
+        partial.commandAliases && typeof partial.commandAliases === "object" && !Array.isArray(partial.commandAliases)
+          ? partial.commandAliases
+          : defaults.commandAliases,
+      neteaseApiPort:
+        typeof partial.neteaseApiPort === "number" &&
+        Number.isInteger(partial.neteaseApiPort) &&
+        partial.neteaseApiPort > 0 &&
+        partial.neteaseApiPort <= 65535
+          ? partial.neteaseApiPort
+          : defaults.neteaseApiPort,
+      qqMusicApiPort:
+        typeof partial.qqMusicApiPort === "number" &&
+        Number.isInteger(partial.qqMusicApiPort) &&
+        partial.qqMusicApiPort > 0 &&
+        partial.qqMusicApiPort <= 65535
+          ? partial.qqMusicApiPort
+          : defaults.qqMusicApiPort,
+      adminPassword:
+        typeof partial.adminPassword === "string" ? partial.adminPassword : defaults.adminPassword,
       adminGroups,
+      autoReturnDelay:
+        typeof partial.autoReturnDelay === "number" && partial.autoReturnDelay >= 0
+          ? partial.autoReturnDelay
+          : defaults.autoReturnDelay,
+      autoPauseOnEmpty:
+        typeof partial.autoPauseOnEmpty === "boolean"
+          ? partial.autoPauseOnEmpty
+          : defaults.autoPauseOnEmpty,
+      voiceDucking,
+      idleTimeoutMinutes:
+        typeof partial.idleTimeoutMinutes === "number" && partial.idleTimeoutMinutes >= 0
+          ? partial.idleTimeoutMinutes
+          : defaults.idleTimeoutMinutes,
+      localAudioEnabled:
+        typeof partial.localAudioEnabled === "boolean"
+          ? partial.localAudioEnabled
+          : defaults.localAudioEnabled,
+      savedQueuesEnabled,
+      playKeepsQueue,
+      publicUrl:
+        typeof partial.publicUrl === "string" ? partial.publicUrl : defaults.publicUrl,
+      trustProxy:
+        typeof partial.trustProxy === "boolean" ? partial.trustProxy : defaults.trustProxy,
       guestMode: gm,
       spotify,
       jellyfin,
       audioQuality,
       enabledProviders,
-      savedQueuesEnabled,
-      playKeepsQueue,
-      voiceDucking,
       loudnessNormalization,
       audioFade,
       autoSourceFallback,

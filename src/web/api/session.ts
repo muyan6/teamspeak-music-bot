@@ -12,13 +12,13 @@ import { SESSION_COOKIE_NAME, validateSessionFromHeaders, extractSessionToken } 
 
 const FAILED_LOGIN_DELAY_MS = 250;
 
-function setSessionCookie(res: Response, token: string): void {
+function setSessionCookie(res: Response, token: string, maxAgeMs = SESSION_TTL_MS): void {
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
     secure: res.req.secure,
     path: "/",
-    maxAge: SESSION_TTL_MS,
+    maxAge: maxAgeMs,
   });
 }
 
@@ -151,7 +151,7 @@ export function createSessionRouter(
       res.status(503).json({ error: "guest unavailable" });
       return;
     }
-    setSessionCookie(res, token);
+    setSessionCookie(res, token, GUEST_SESSION_TTL_MS);
     res.json({ id: GUEST_USER_ID, username: GUEST_USERNAME, role: "guest" });
   });
 

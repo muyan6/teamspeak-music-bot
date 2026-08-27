@@ -459,6 +459,10 @@ export class BotProfileManager {
   }
 
   private async downloadImage(url: string): Promise<Buffer | null> {
+    if (!isSafeCoverUrl(url)) {
+      this.logger.warn({ url }, "Refusing to download cover image: unsafe or private URL (SSRF guard)");
+      return null;
+    }
     try {
       const resp = await axios.get(url, {
         responseType: "arraybuffer",
@@ -512,3 +516,48 @@ export class BotProfileManager {
     }
   }
 }
+
+/**
+ * SSRF Guard: Verify that a cover image URL points to a valid public HTTP(S) host
+ * and not a private LAN, loopback, or cloud metadata address.
+ */
+export function isSafeCoverUrl(urlString: string): boolean {
+  if (!urlString || typeof urlString !== "string") return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return false;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const host = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host.endsWith(".localhost")
+  ) {
+    return false;
+  }
+
+  if (/^127\./.test(host)) return false;
+  if (/^10\./.test(host)) return false;
+  if (/^192\.168\./.test(host)) return false;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
+  if (/^169\.254\./.test(host)) return false;
+  if (/^0\./.test(host)) return false;
+  if (/^fc[0-9a-f]{2}:/i.test(host) || /^fd[0-9a-f]{2}:/i.test(host)) return false;
+  if (/^fe80:/i.test(host)) return false;
+
+  return true;
+}
+

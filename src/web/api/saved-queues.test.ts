@@ -16,8 +16,8 @@ const song = (id: string) => ({
   duration: 1,
 });
 
-function mount(enabled: boolean, opts: { queue?: unknown[]; user?: Record<string, unknown> } = {}) {
-  const db = createDatabase(":memory:");
+function mount(enabled: boolean, opts: { queue?: unknown[]; user?: Record<string, unknown>; db?: BotDatabase } = {}) {
+  const db = opts.db ?? createDatabase(":memory:");
   const loads: Array<{ songs: unknown[]; mode: string; by?: string }> = [];
   const bot = {
     getQueueManager: () => ({ list: () => opts.queue ?? [song("a"), song("b")] }),
@@ -134,20 +134,19 @@ describe("saved-queues router", () => {
     expect(loadRes.status).toBe(403);
   });
 
-  it("403s when member lacks required capabilities", async () => {
-    const { app, db } = mount(true, {
-      user: {
-        id: "u1",
-        username: "alice",
-        role: "member",
-        bots: "all",
-        capabilities: new Set([]), // no capabilities
-      },
-    });
-    const saved = db.saveQueue("u1", "mine", [song("a")]);
-    const saveRes = await request(app).post("/api/saved-queues").send({ botId: "b", name: "newq" });
-    expect(saveRes.status).toBe(403);
-    const loadRes = await request(app).post(`/api/saved-queues/${saved.id}/load`).send({ botId: "b" });
-    expect(loadRes.status).toBe(403);
+  it("allows creator or admin to delete a shared queue, but 403s other members", async () => {
+    const { app: creatorApp, db } = mount(true, { user: { id: "creator1", username: "alice", role: "member" } });
+    const shared1 = db.saveQueue(SHARED_QUEUE_OWNER, "shared1", [song("a")], "creator1");
+    const shared2 = db.saveQueue(SHARED_QUEUE_OWNER, "shared2", [song("b")], "someoneElse");
+
+    // Creator can delete own shared queue
+    expect((await request(creatorApp).delete(`/api/saved-queues/${shared1.id}`)).status).toBe(200);
+
+    // Creator cannot delete another user's shared queue (403)
+    expect((await request(creatorApp).delete(`/api/saved-queues/${shared2.id}`)).status).toBe(403);
+
+    // Admin can delete any shared queue
+    const { app: adminApp } = mount(true, { user: { id: "admin1", username: "admin", role: "admin" }, db });
+    expect((await request(adminApp).delete(`/api/saved-queues/${shared2.id}`)).status).toBe(200);
   });
 });

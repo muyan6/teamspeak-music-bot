@@ -92,7 +92,8 @@ export function parseNeteaseTrial(item: any): number | undefined {
   const start = Number(t.start ?? t.begin ?? t.trialBegin ?? 0);
   const end = Number(t.end ?? t.trialEnd);
   if (!Number.isFinite(end) || end <= start) return undefined;
-  const secs = end > 1000 ? (end - start) / 1000 : end - start;
+  const isMs = end >= 10000 || (t.start !== undefined && t.start >= 1000);
+  const secs = isMs ? (end - start) / 1000 : end - start;
   return Math.round(secs);
 }
 
