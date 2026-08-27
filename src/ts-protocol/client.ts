@@ -792,7 +792,18 @@ export class TS3Client extends EventEmitter {
 
   /** The server host (needed for file transfer TCP connections). */
   getHost(): string {
-    return this.options.host;
+    const resolved = this.voiceEndpointResolver.getEndpoint()?.host;
+    if (resolved) return resolved;
+    let host = (this.options.host ?? "").trim();
+    if (host.startsWith("[")) {
+      const closing = host.indexOf("]");
+      if (closing > 0) return host.slice(1, closing);
+    }
+    const sep = host.lastIndexOf(":");
+    if (sep > 0 && !host.includes("]")) {
+      return host.slice(0, sep);
+    }
+    return host;
   }
 
   /** The current channel ID of this client. */
