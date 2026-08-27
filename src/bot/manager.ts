@@ -383,12 +383,12 @@ export class BotManager extends EventEmitter {
       });
       this.bots.set(id, bot);
       this.emit("botInstance", bot);
-      await connectWithTimeout(bot, 15_000, this.logger);
+      await connectWithTimeout(bot, 25_000, this.logger);
       // Mark as autoStart so it reconnects on Docker / service restart, and persist identity
       const identity = bot.getIdentityExport() || saved.identity;
       this.database.saveBotInstance({ ...saved, autoStart: true, identity });
     } else {
-      await connectWithTimeout(oldBot, 15_000, this.logger);
+      await connectWithTimeout(oldBot, 25_000, this.logger);
     }
   }
 
@@ -489,7 +489,7 @@ export class BotManager extends EventEmitter {
       // Only auto-connect bots that have autoStart enabled
       if (saved.autoStart) {
         try {
-          await connectWithTimeout(bot, 15_000, this.logger);
+          await connectWithTimeout(bot, 25_000, this.logger);
           this.persistBotIdentity(saved, bot);
           this.logger.info(
             { botId: saved.id, name: saved.name },
