@@ -272,6 +272,7 @@ export class LocalMusicProvider implements MusicProvider {
   /** Ids with an in-flight retry-delete scheduled (file briefly locked, e.g.
    *  ffmpeg on Windows still releasing a just-stopped track). */
   private retrying = new Set<string>();
+  private indexLock = Promise.resolve();
 
   constructor(uploadDir: string, options: LocalMusicProviderOptions = {}) {
     this.uploadDir = uploadDir;
@@ -280,6 +281,20 @@ export class LocalMusicProvider implements MusicProvider {
     this.maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
     mkdirSync(uploadDir, { recursive: true });
     this.loadIndex();
+  }
+
+  private async withIndexLock<T>(fn: () => T | Promise<T>): Promise<T> {
+    const prevLock = this.indexLock;
+    let release: () => void = () => {};
+    this.indexLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await prevLock;
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   /** Wire the resolver the BotManager uses to report which uploads are still
@@ -424,12 +439,14 @@ export class LocalMusicProvider implements MusicProvider {
       mimeType: input.mimeType || "application/octet-stream",
     };
 
-    this.records.unshift(song);
-    this.indexSearchRecord(song);
-    this.saveIndex();
-    // Never evict the file we just accepted, even if every older file is still
-    // queued — returning success for a file we deleted would be a phantom entry.
-    this.enforceQuota(id);
+    await this.withIndexLock(() => {
+      this.records.unshift(song);
+      this.indexSearchRecord(song);
+      this.saveIndex();
+      // Never evict the file we just accepted, even if every older file is still
+      // queued — returning success for a file we deleted would be a phantom entry.
+      this.enforceQuota(id);
+    });
     return this.toSong(song);
   }
 

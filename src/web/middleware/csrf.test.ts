@@ -70,4 +70,22 @@ describe("csrfOriginCheck middleware", () => {
     expect(res.status).toBe(403);
     expect(res.body).toEqual({ error: "bad origin" });
   });
+
+  it("accepts POST when Origin matches X-Forwarded-Host behind reverse proxy", async () => {
+    const res = await request(app)
+      .post("/")
+      .set("Host", "127.0.0.1:3000")
+      .set("X-Forwarded-Host", "music.example.com")
+      .set("Origin", "https://music.example.com");
+    expect(res.status).toBe(200);
+  });
+
+  it("supports comma-separated multi-hop X-Forwarded-Host", async () => {
+    const res = await request(app)
+      .post("/")
+      .set("Host", "127.0.0.1:3000")
+      .set("X-Forwarded-Host", "music.example.com, internal-proxy.local")
+      .set("Origin", "https://music.example.com");
+    expect(res.status).toBe(200);
+  });
 });

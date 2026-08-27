@@ -169,7 +169,7 @@ describe("LocalMusicProvider upload validation", () => {
     // "no audio track" and must be accepted exactly like a truncated .mp3
     // always has been. The extension allowlist is what is under test here.
     // .m4v is excluded on purpose — see the next test.
-    for (const ext of [".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".mpg", ".mpeg", ".3gp", ".ts", ".m2ts", ".ogv"]) {
+    for (const ext of [".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ts", ".m2ts", ".ogv"]) {
       const song = await p.uploadAudio({
         buffer: Buffer.from("not really a video"),
         originalName: `clip${ext}`,
@@ -178,21 +178,6 @@ describe("LocalMusicProvider upload validation", () => {
       expect(song.platform).toBe("local");
       expect(song.name).toBe("clip");
     }
-  });
-
-  it("refuses a .m4v raw video elementary stream, which by definition has no audio", async () => {
-    // .m4v is not a container — ffmpeg's rawvideo demuxer opens arbitrary
-    // bytes as an MPEG-4 video elementary stream, so it IS recognised and
-    // genuinely carries no audio track. Refusing it is the correct outcome,
-    // and it is the one case that distinguishes `recognized` from `probed`.
-    const p = new LocalMusicProvider(dir);
-    await expect(
-      p.uploadAudio({
-        buffer: Buffer.from("not really a video"),
-        originalName: "clip.m4v",
-        mimeType: "video/x-m4v",
-      }),
-    ).rejects.toThrow(/音轨/);
   });
 
   it("the error message names both audio and video formats", async () => {

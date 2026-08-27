@@ -78,7 +78,7 @@ export function shouldUsePowerShellDownload(
 
 export function cleanupTempDir(dir: string): void {
   try {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   } catch {
     // best-effort
   }
@@ -670,7 +670,13 @@ export class AudioPlayer extends EventEmitter {
     if (this.downloader) {
       const ps = this.downloader;
       this.downloader = null;
-      try { ps.kill("SIGTERM"); } catch { /* already gone */ }
+      try {
+        if (process.platform === "win32" && ps.pid) {
+          spawn("taskkill", ["/pid", String(ps.pid), "/T", "/F"], { stdio: "ignore" });
+        } else {
+          ps.kill("SIGTERM");
+        }
+      } catch { /* already gone */ }
     }
 
     if (this.currentTempDir) {

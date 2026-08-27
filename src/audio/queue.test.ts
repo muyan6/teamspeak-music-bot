@@ -742,4 +742,54 @@ describe("PlayQueue", () => {
       expect(queue.current()?.id).toBe("a");
     });
   });
+
+  describe("peekNext", () => {
+    it("returns null when queue is empty", () => {
+      expect(queue.peekNext()).toBeNull();
+    });
+
+    it("predicts next song in sequential mode without advancing", () => {
+      queue.setMode(PlayMode.Sequential);
+      for (const id of ["a", "b", "c"]) queue.add(makeSong(id));
+      queue.play(); // current: a (0)
+      expect(queue.peekNext()?.id).toBe("b");
+      expect(queue.current()?.id).toBe("a");
+      expect(queue.next()?.id).toBe("b");
+      expect(queue.peekNext()?.id).toBe("c");
+      expect(queue.next()?.id).toBe("c");
+      expect(queue.peekNext()).toBeNull();
+    });
+
+    it("predicts wrap-around in loop mode", () => {
+      queue.setMode(PlayMode.Loop);
+      for (const id of ["a", "b"]) queue.add(makeSong(id));
+      queue.playAt(1); // current: b (1)
+      expect(queue.peekNext()?.id).toBe("a");
+      expect(queue.next()?.id).toBe("a");
+    });
+
+    it("matches the song chosen by next() in random mode", () => {
+      queue.setMode(PlayMode.Random);
+      for (const id of ["a", "b", "c", "d"]) queue.add(makeSong(id));
+      queue.play(); // current: a
+      const peeked = queue.peekNext();
+      expect(peeked).not.toBeNull();
+      expect(peeked?.id).not.toBe("a");
+      // Repeat peekNext returns same candidate
+      expect(queue.peekNext()?.id).toBe(peeked!.id);
+      // next() returns the exact same candidate
+      const nextSong = queue.next();
+      expect(nextSong?.id).toBe(peeked!.id);
+    });
+
+    it("honours addNext forwardStack in peekNext", () => {
+      queue.setMode(PlayMode.Random);
+      for (const id of ["a", "b", "c"]) queue.add(makeSong(id));
+      queue.play(); // a
+      queue.addNext(makeSong("x"));
+      expect(queue.peekNext()?.id).toBe("x");
+      expect(queue.next()?.id).toBe("x");
+    });
+  });
 });
+

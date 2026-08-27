@@ -36,6 +36,7 @@ export class PlayQueue {
   private playedIndices = new Set<number>();
   private history: number[] = [];
   private forwardStack: number[] = [];
+  private nextRandomCandidate: number | null = null;
   private static readonly HISTORY_LIMIT = 50;
 
   private pushHistory(idx: number): void {
@@ -48,10 +49,12 @@ export class PlayQueue {
 
   add(song: QueuedSong): void {
     this.songs.push(song);
+    this.nextRandomCandidate = null;
   }
 
   addMany(songs: QueuedSong[]): void {
     this.songs.push(...songs);
+    this.nextRandomCandidate = null;
   }
 
   /**
@@ -68,6 +71,7 @@ export class PlayQueue {
    * the forward stack, which next() consults first (issue #141).
    */
   addNext(song: QueuedSong): void {
+    this.nextRandomCandidate = null;
     if (this.currentIndex < 0 || this.songs.length === 0) {
       this.songs.push(song);
       return;
@@ -105,6 +109,7 @@ export class PlayQueue {
 
   remove(index: number): QueuedSong | null {
     if (index < 0 || index >= this.songs.length) return null;
+    this.nextRandomCandidate = null;
     const [removed] = this.songs.splice(index, 1);
 
     if (index < this.currentIndex) {
@@ -143,6 +148,7 @@ export class PlayQueue {
     this.playedIndices.clear();
     this.history = [];
     this.forwardStack = [];
+    this.nextRandomCandidate = null;
   }
 
   play(): QueuedSong | null {
@@ -150,6 +156,7 @@ export class PlayQueue {
     this.playedIndices.clear();
     this.history = [];
     this.forwardStack = [];
+    this.nextRandomCandidate = null;
     this.currentIndex = 0;
     this.playedIndices.add(0);
     return this.songs[0];
@@ -163,6 +170,7 @@ export class PlayQueue {
     // unaffected by this clear.
     this.playedIndices.clear();
     this.forwardStack = [];
+    this.nextRandomCandidate = null;
     this.currentIndex = index;
     this.playedIndices.add(index);
     return this.songs[index];
@@ -201,6 +209,7 @@ export class PlayQueue {
           this.pushHistory(this.currentIndex);
           this.currentIndex = target;
           this.playedIndices.add(target);
+          this.nextRandomCandidate = null;
           return this.songs[target];
         }
 
@@ -215,12 +224,16 @@ export class PlayQueue {
 
         if (unplayed.length === 0) {
           // Cycle complete.
-          if (this.mode === PlayMode.Random) return null; // 随机：播完即停
+          if (this.mode === PlayMode.Random) {
+            this.nextRandomCandidate = null;
+            return null; // 随机：播完即停
+          }
           // 随机循环：reshuffle and keep going forever.
           if (this.songs.length === 1) {
             this.pushHistory(this.currentIndex);
             this.currentIndex = 0;
             this.playedIndices = new Set([0]);
+            this.nextRandomCandidate = null;
             return this.songs[0];
           }
           // Start a fresh cycle: every song is eligible again, but exclude
@@ -233,8 +246,13 @@ export class PlayQueue {
           }
         }
 
-        const nextIndex =
-          unplayed[Math.floor(Math.random() * unplayed.length)];
+        let nextIndex: number;
+        if (this.nextRandomCandidate !== null && unplayed.includes(this.nextRandomCandidate)) {
+          nextIndex = this.nextRandomCandidate;
+        } else {
+          nextIndex = unplayed[Math.floor(Math.random() * unplayed.length)];
+        }
+        this.nextRandomCandidate = null;
         this.pushHistory(this.currentIndex);
         this.currentIndex = nextIndex;
         this.playedIndices.add(nextIndex);
@@ -245,6 +263,7 @@ export class PlayQueue {
 
   prev(): QueuedSong | null {
     if (this.songs.length === 0) return null;
+    this.nextRandomCandidate = null;
 
     // 记录当前位置到前进栈，供 next 优先返回
     if (this.currentIndex >= 0 && this.forwardStack.length < PlayQueue.HISTORY_LIMIT) {
@@ -306,13 +325,29 @@ export class PlayQueue {
       return this.songs[nextIndex] ?? null;
     }
     if (this.mode === PlayMode.Random || this.mode === PlayMode.RandomLoop) {
-      const unplayed = this.songs.map((_, i) => i).filter((i) => !this.playedIndices.has(i) && i !== this.currentIndex);
+      const unplayed: number[] = [];
+      for (let i = 0; i < this.songs.length; i++) {
+        if (!this.playedIndices.has(i) && i !== this.currentIndex) {
+          unplayed.push(i);
+        }
+      }
       if (unplayed.length > 0) {
-        return this.songs[unplayed[0]];
+        if (this.nextRandomCandidate !== null && unplayed.includes(this.nextRandomCandidate)) {
+          return this.songs[this.nextRandomCandidate];
+        }
+        this.nextRandomCandidate = unplayed[Math.floor(Math.random() * unplayed.length)];
+        return this.songs[this.nextRandomCandidate];
       }
       if (this.mode === PlayMode.RandomLoop && this.songs.length > 0) {
-        const candidates = this.songs.map((_, i) => i).filter((i) => i !== this.currentIndex);
-        return candidates.length > 0 ? this.songs[candidates[0]] : this.songs[0];
+        const candidates = this.songs
+          .map((_, i) => i)
+          .filter((i) => i !== this.currentIndex);
+        if (candidates.length === 0) return this.songs[0];
+        if (this.nextRandomCandidate !== null && candidates.includes(this.nextRandomCandidate)) {
+          return this.songs[this.nextRandomCandidate];
+        }
+        this.nextRandomCandidate = candidates[Math.floor(Math.random() * candidates.length)];
+        return this.songs[this.nextRandomCandidate];
       }
     }
     return null;
@@ -339,6 +374,7 @@ export class PlayQueue {
     this.playedIndices.clear();
     this.history = [];
     this.forwardStack = [];
+    this.nextRandomCandidate = null;
     if (this.currentIndex >= 0) {
       this.playedIndices.add(this.currentIndex);
     }
@@ -379,5 +415,6 @@ export class PlayQueue {
     this.playedIndices = new Set(this.currentIndex >= 0 ? [this.currentIndex] : []);
     this.history = [];
     this.forwardStack = [];
+    this.nextRandomCandidate = null;
   }
 }

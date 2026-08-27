@@ -14,7 +14,8 @@ export function csrfOriginCheck(req: Request, res: Response, next: NextFunction)
     next();
     return;
   }
-  const expectedHost = req.get("host");
+  const forwardedHost = req.get("x-forwarded-host")?.split(",")[0].trim();
+  const expectedHost = forwardedHost || req.get("host");
   const originHeader = req.get("origin");
   const refererHeader = req.get("referer");
   const headerHost = hostOf(originHeader) ?? hostOf(refererHeader);
