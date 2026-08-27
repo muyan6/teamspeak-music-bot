@@ -3,7 +3,7 @@
 
 services:
   tsmusicbot-custom:
-    image: ghcr.1ms.run/muyan6/teamspeak-music-bot:latest
+    image: ghcr.1ms.run/muyan6/teamspeak1:latest
     container_name: tsmusicbot-custom
     network_mode: host
     volumes:
