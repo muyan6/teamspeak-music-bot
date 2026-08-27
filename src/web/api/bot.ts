@@ -548,6 +548,7 @@ export function createBotRouter(
       const channelId = optionalBotText(body.channelId, "channelId", 128);
       const channelPassword = optionalBotText(body.channelPassword, "channelPassword", 1024);
       const serverPassword = optionalBotText(body.serverPassword, "serverPassword", 1024);
+      const autoStart = botBoolean(body.autoStart, "autoStart");
       const normalizedProtocol = botProtocol(body.serverProtocol);
       const ts6ApiKey = optionalBotText(body.ts6ApiKey, "ts6ApiKey", 4096);
       // Update in database
@@ -561,6 +562,7 @@ export function createBotRouter(
         channelId,
         channelPassword,
         serverPassword,
+        autoStart,
         serverProtocol: normalizedProtocol,
         ts6ApiKey: ts6ApiKey || undefined,
       });

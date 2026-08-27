@@ -287,6 +287,7 @@ export class BotManager extends EventEmitter {
       serverProtocol: params.serverProtocol ?? existing.serverProtocol,
       ts6ApiKey: params.ts6ApiKey ?? existing.ts6ApiKey,
       serverPassword: params.serverPassword ?? existing.serverPassword,
+      autoStart: params.autoStart !== undefined ? params.autoStart : existing.autoStart,
     });
     // Update in-memory name immediately (other fields need reconnect)
     const bot = this.bots.get(id);
@@ -383,7 +384,9 @@ export class BotManager extends EventEmitter {
       this.bots.set(id, bot);
       this.emit("botInstance", bot);
       await connectWithTimeout(bot, 15_000, this.logger);
-      this.persistBotIdentity(saved, bot);
+      // Mark as autoStart so it reconnects on Docker / service restart, and persist identity
+      const identity = bot.getIdentityExport() || saved.identity;
+      this.database.saveBotInstance({ ...saved, autoStart: true, identity });
     } else {
       await connectWithTimeout(oldBot, 15_000, this.logger);
     }
@@ -483,10 +486,30 @@ export class BotManager extends EventEmitter {
       this.bots.set(saved.id, bot);
       this.emit("botInstance", bot);
 
-      this.logger.info(
-        { botId: saved.id, name: saved.name },
-        "Loaded saved bot (startup auto-connect disabled, start manually from WebUI)"
-      );
+      // Only auto-connect bots that have autoStart enabled
+      if (saved.autoStart) {
+        try {
+          await connectWithTimeout(bot, 15_000, this.logger);
+          this.persistBotIdentity(saved, bot);
+          this.logger.info(
+            { botId: saved.id, name: saved.name },
+            "Auto-connected saved bot"
+          );
+        } catch (err) {
+          this.logger.error(
+            { err, botId: saved.id, name: saved.name },
+            "Failed to auto-connect bot on startup (start manually from WebUI)"
+          );
+        }
+
+        // Stagger connections to avoid overwhelming the TS server
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } else {
+        this.logger.info(
+          { botId: saved.id, name: saved.name },
+          "Loaded bot (autoStart disabled, not connecting)"
+        );
+      }
     }
 
     this.logger.info(

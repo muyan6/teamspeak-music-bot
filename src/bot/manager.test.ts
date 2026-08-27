@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { BotManager, normalizeServerAddress } from "./manager.js";
+import { BotInstance } from "./instance.js";
 import { createDatabase, type BotDatabase } from "../data/database.js";
 import { createPermissionStore } from "../data/permissions.js";
 import { getDefaultConfig, loadConfig, saveConfig, type BotConfig } from "../data/config.js";
@@ -230,7 +231,7 @@ describe("BotManager.loadSavedBots — startup behavior", () => {
     dirs.length = 0;
   });
 
-  it("loads saved bot instances into memory without auto-connecting on startup", async () => {
+  it("loads saved bot instances without connecting when autoStart is false", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tsmusicbot-load-test-"));
     dirs.push(dir);
     const configPath = join(dir, "config.json");
@@ -246,6 +247,55 @@ describe("BotManager.loadSavedBots — startup behavior", () => {
       serverAddress: "127.0.0.1",
       serverPort: 9987,
       nickname: "bot1",
+      defaultChannel: "",
+      channelId: "",
+      channelPassword: "",
+      autoStart: false,
+      serverProtocol: "",
+      ts6ApiKey: "",
+      serverPassword: "",
+    });
+
+    const manager = new BotManager(
+      provider,
+      provider,
+      provider,
+      db,
+      config,
+      stubLogger,
+      {} as unknown as AvatarStore,
+      permissions,
+      configPath,
+    );
+
+    await manager.loadSavedBots();
+
+    const allBots = manager.getAllBots();
+    expect(allBots).toHaveLength(1);
+    expect(allBots[0].id).toBe("bot-saved-1");
+    expect(allBots[0].isConnected()).toBe(false);
+
+    allBots[0].disconnect();
+  });
+
+  it("attempts to auto-connect and handles failure gracefully when autoStart is true", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmusicbot-load-test-"));
+    dirs.push(dir);
+    const configPath = join(dir, "config.json");
+    const config = getDefaultConfig();
+    saveConfig(configPath, config);
+    db = createDatabase(":memory:");
+    const permissions = createPermissionStore(db.db);
+    const provider = {} as unknown as MusicProvider;
+
+    const connectSpy = vi.spyOn(BotInstance.prototype, "connect").mockRejectedValueOnce(new Error("Connection failed"));
+
+    db.saveBotInstance({
+      id: "bot-saved-2",
+      name: "Saved Bot 2",
+      serverAddress: "127.0.0.1",
+      serverPort: 9987,
+      nickname: "bot2",
       defaultChannel: "",
       channelId: "",
       channelPassword: "",
@@ -267,14 +317,67 @@ describe("BotManager.loadSavedBots — startup behavior", () => {
       configPath,
     );
 
-    // loadSavedBots should populate manager.getAllBots() and NOT attempt network connection
+    // Should call connect and not throw or crash on failure
     await manager.loadSavedBots();
 
+    expect(connectSpy).toHaveBeenCalled();
     const allBots = manager.getAllBots();
     expect(allBots).toHaveLength(1);
-    expect(allBots[0].id).toBe("bot-saved-1");
-    expect(allBots[0].isConnected()).toBe(false);
+    expect(allBots[0].id).toBe("bot-saved-2");
 
     allBots[0].disconnect();
+    connectSpy.mockRestore();
+  });
+
+  it("stopBot marks autoStart as false in database", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tsmusicbot-stop-test-"));
+    dirs.push(dir);
+    const configPath = join(dir, "config.json");
+    const config = getDefaultConfig();
+    saveConfig(configPath, config);
+    db = createDatabase(":memory:");
+    const permissions = createPermissionStore(db.db);
+    const provider = {} as unknown as MusicProvider;
+
+    db.saveBotInstance({
+      id: "bot-saved-3",
+      name: "Saved Bot 3",
+      serverAddress: "127.0.0.1",
+      serverPort: 9987,
+      nickname: "bot3",
+      defaultChannel: "",
+      channelId: "",
+      channelPassword: "",
+      autoStart: true,
+      serverProtocol: "",
+      ts6ApiKey: "",
+      serverPassword: "",
+    });
+
+    const manager = new BotManager(
+      provider,
+      provider,
+      provider,
+      db,
+      config,
+      stubLogger,
+      {} as unknown as AvatarStore,
+      permissions,
+      configPath,
+    );
+
+    await manager.createBot({
+      name: "Saved Bot 3",
+      serverAddress: "127.0.0.1",
+      serverPort: 9987,
+      nickname: "bot3",
+      autoStart: true,
+    });
+
+    const botId = manager.getAllBots()[0].id;
+    manager.stopBot(botId);
+
+    const saved = db.getBotInstances().find((b) => b.id === botId);
+    expect(saved?.autoStart).toBe(false);
   });
 });
