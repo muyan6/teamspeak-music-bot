@@ -325,6 +325,33 @@ describe("database", () => {
       expect(botDb.getQueueState("b2")!.songs).toEqual([]);
     });
   });
+
+  describe("profile_config defaults", () => {
+    it("newly saved bot defaults channelDescEnabled and nowPlayingMsgEnabled to false", () => {
+      botDb.saveBotInstance({
+        id: "new-bot-1",
+        name: "New Bot",
+        serverAddress: "127.0.0.1",
+        serverPort: 9987,
+        nickname: "NewBot",
+        defaultChannel: "",
+        channelId: "",
+        channelPassword: "",
+        autoStart: false,
+        serverProtocol: "",
+        ts6ApiKey: "",
+        serverPassword: "",
+      });
+
+      const config = botDb.getProfileConfig("new-bot-1");
+      expect(config.avatarEnabled).toBe(true);
+      expect(config.descriptionEnabled).toBe(true);
+      expect(config.nicknameEnabled).toBe(true);
+      expect(config.awayStatusEnabled).toBe(true);
+      expect(config.channelDescEnabled).toBe(false);
+      expect(config.nowPlayingMsgEnabled).toBe(false);
+    });
+  });
 });
 
 describe("guest principal migration", () => {

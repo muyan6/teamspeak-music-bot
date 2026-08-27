@@ -143,6 +143,8 @@ describe("BotInstance voice-ducking lifecycle integration", () => {
     return {
       disconnectEmitted: false,
       connected: false,
+      manualDisconnect: false,
+      _cancelReconnect: vi.fn(),
       tsClient: {
         connect: vi.fn(() => connectPromise),
         getResolvedVoiceEndpoint: vi.fn(() => ({ host: "203.0.113.20", port: 12000 })),
@@ -1650,5 +1652,111 @@ describe("BotInstance auto-return to default channel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("BotInstance auto-reconnect on unexpected disconnect", () => {
+  function makeReconnectBot() {
+    const provider = { platform: "netease" } as unknown as MusicProvider;
+    const logger: any = {
+      info() {}, warn() {}, error() {}, debug() {},
+      child() { return logger; },
+    };
+    const database = {
+      getProfileConfig: () => ({}),
+      getCustomAvatarPath: () => null,
+      getPlayerSettings: () => ({ volume: 75, playMode: "seq" }),
+      saveVolume: () => {},
+      savePlayMode: () => {},
+      getQueueState: () => null,
+      saveQueueState: () => {},
+      clearQueueState: () => {},
+    } as unknown as BotDatabase;
+    const options: BotInstanceOptions = {
+      id: "bot-reconnect-test",
+      name: "ReconnectBot",
+      tsOptions: { host: "localhost", port: 9987, queryPort: 10011, nickname: "ReconnectBot" } as any,
+      neteaseProvider: provider,
+      qqProvider: provider,
+      bilibiliProvider: provider,
+      youtubeProvider: provider,
+      database,
+      config: { spotify: {}, savedQueuesEnabled: false } as unknown as BotConfig,
+      logger,
+      avatarStore: { read: () => null } as unknown as AvatarStore,
+      spotifyControllerFactory: () => ({ on: () => {}, stop: () => {} }) as any,
+    };
+    return new BotInstance(options);
+  }
+
+  it("schedules auto-reconnect when disconnected unexpectedly", () => {
+    vi.useFakeTimers();
+    try {
+      const bot = makeReconnectBot();
+      expect(bot.isManualDisconnect()).toBe(false);
+      expect(bot.isReconnecting()).toBe(false);
+
+      // Simulate unexpected TS client disconnect
+      (bot as any).tsClient.emit("disconnected");
+
+      expect(bot.isManualDisconnect()).toBe(false);
+      expect(bot.isReconnecting()).toBe(true);
+      expect(bot.getReconnectAttempts()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not schedule auto-reconnect on explicit disconnect()", () => {
+    vi.useFakeTimers();
+    try {
+      const bot = makeReconnectBot();
+      bot.disconnect();
+
+      expect(bot.isManualDisconnect()).toBe(true);
+      expect(bot.isReconnecting()).toBe(false);
+
+      // Subsequent tsClient disconnected event is ignored
+      (bot as any).tsClient.emit("disconnected");
+      expect(bot.isManualDisconnect()).toBe(true);
+      expect(bot.isReconnecting()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels pending reconnect timer if disconnect() is called during retry wait", () => {
+    vi.useFakeTimers();
+    try {
+      const bot = makeReconnectBot();
+      // Unexpected disconnect starts timer
+      (bot as any).tsClient.emit("disconnected");
+      expect(bot.isReconnecting()).toBe(true);
+
+      // User manually stops bot
+      bot.disconnect();
+      expect(bot.isManualDisconnect()).toBe(true);
+      expect(bot.isReconnecting()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets attempts and cancels timer when reconnect succeeds", async () => {
+    const bot = makeReconnectBot();
+    vi.spyOn((bot as any).tsClient, "connect").mockResolvedValue(undefined);
+    vi.spyOn((bot as any).tsClient, "getResolvedVoiceEndpoint").mockReturnValue({ host: "127.0.0.1", port: 9987 });
+    vi.spyOn((bot as any).profileManager, "onConnect").mockImplementation(() => {});
+
+    // Trigger unexpected disconnect
+    (bot as any).tsClient.emit("disconnected");
+    expect(bot.isReconnecting()).toBe(true);
+
+    // Attempt auto-reconnect
+    await (bot as any)._attemptAutoReconnect();
+
+    expect(bot.getReconnectAttempts()).toBe(0);
+    expect(bot.isReconnecting()).toBe(false);
+    expect((bot as any).connected).toBe(true);
   });
 });

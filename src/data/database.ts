@@ -183,17 +183,17 @@ function migrateSchema(db: Database.Database): void {
     db.exec("ALTER TABLE bot_instances ADD COLUMN channelId TEXT NOT NULL DEFAULT ''");
   }
   // Profile feature flags
-  const profileCols = [
-    "profile_avatar_enabled",
-    "profile_description_enabled",
-    "profile_nickname_enabled",
-    "profile_away_enabled",
-    "profile_channel_desc_enabled",
-    "profile_now_playing_enabled",
+  const profileCols: Array<{ col: string; defaultVal: number }> = [
+    { col: "profile_avatar_enabled", defaultVal: 1 },
+    { col: "profile_description_enabled", defaultVal: 1 },
+    { col: "profile_nickname_enabled", defaultVal: 1 },
+    { col: "profile_away_enabled", defaultVal: 1 },
+    { col: "profile_channel_desc_enabled", defaultVal: 0 },
+    { col: "profile_now_playing_enabled", defaultVal: 0 },
   ];
-  for (const col of profileCols) {
+  for (const { col, defaultVal } of profileCols) {
     if (!names.includes(col)) {
-      db.exec(`ALTER TABLE bot_instances ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 1`);
+      db.exec(`ALTER TABLE bot_instances ADD COLUMN ${col} INTEGER NOT NULL DEFAULT ${defaultVal}`);
     }
   }
   if (!names.includes("custom_avatar_path")) {
@@ -254,6 +254,13 @@ function initTables(db: Database.Database): void {
       serverPassword TEXT NOT NULL DEFAULT '',
       volume INTEGER NOT NULL DEFAULT 75,
       play_mode TEXT NOT NULL DEFAULT 'seq',
+      profile_avatar_enabled INTEGER NOT NULL DEFAULT 1,
+      profile_description_enabled INTEGER NOT NULL DEFAULT 1,
+      profile_nickname_enabled INTEGER NOT NULL DEFAULT 1,
+      profile_away_enabled INTEGER NOT NULL DEFAULT 1,
+      profile_channel_desc_enabled INTEGER NOT NULL DEFAULT 0,
+      profile_now_playing_enabled INTEGER NOT NULL DEFAULT 0,
+      custom_avatar_path TEXT,
       identity TEXT
     );
 

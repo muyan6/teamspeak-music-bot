@@ -48,6 +48,16 @@ import {
 /** Reply sent when a non-admin invokes an admin-only chat command. */
 export const COMMAND_DENIED_MESSAGE = "⛔ 需要管理员权限（该命令仅限管理员服务器组）";
 
+interface ReconnectSnapshot {
+  channelId?: string;
+  songs: StoredSong[];
+  currentIndex: number;
+  mode: PlayMode;
+  isFmMode: boolean;
+  fmPlatform: string;
+  wasPlaying: boolean;
+}
+
 /** Maps the persisted / command-line play-mode string to the PlayMode enum.
  *  Shared by the !mode command and the restart-restore path (#125). */
 const PLAY_MODE_BY_VALUE: Record<string, PlayMode> = {
@@ -173,8 +183,13 @@ export class BotInstance extends EventEmitter {
   private config: BotConfig;
   private logger: Logger;
   private avatarStore: AvatarStore;
+  private tsOptions: TS3ClientOptions;
   private connected = false;
   private disconnectEmitted = false;
+  private manualDisconnect = false;
+  private autoReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private reconnectSnapshot: ReconnectSnapshot | null = null;
   private voteSkipUsers = new Set<string>();
   private isAdvancing = false;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -212,6 +227,7 @@ export class BotInstance extends EventEmitter {
     super();
     this.id = options.id;
     this.name = options.name;
+    this.tsOptions = options.tsOptions;
     this.neteaseProvider = options.neteaseProvider;
     this.qqProvider = options.qqProvider;
     this.bilibiliProvider = options.bilibiliProvider;
@@ -401,6 +417,32 @@ export class BotInstance extends EventEmitter {
     });
 
     this.tsClient.on("disconnected", () => {
+      // Capture pre-disconnect state snapshot for auto-reconnect if not manual disconnect
+      const wasUnexpected = !this.manualDisconnect;
+      if (wasUnexpected) {
+        const currentCid = this.tsClient.getChannelId();
+        const playerState = this.player.getState();
+        const songs = this.queue.list();
+        this.reconnectSnapshot = {
+          channelId: currentCid !== 0n ? currentCid.toString() : undefined,
+          songs: songs.map((s) => ({
+            id: s.id,
+            name: s.name,
+            artist: s.artist,
+            album: s.album,
+            duration: s.duration,
+            platform: s.platform,
+            coverUrl: s.coverUrl,
+            requestedBy: s.requestedBy,
+          })),
+          currentIndex: this.queue.getCurrentIndex(),
+          mode: this.queue.getMode(),
+          isFmMode: this.isFmMode,
+          fmPlatform: this.isFmMode && this.fmProvider ? (this.fmProvider as any).platform || "" : "",
+          wasPlaying: playerState === "playing",
+        };
+      }
+
       // Always reset local state — covers the case where connect() never
       // completed (hanging handshake → 60s library idle timeout) and
       // this.connected was never flipped to true. Previously this handler
@@ -430,9 +472,14 @@ export class BotInstance extends EventEmitter {
       this.autoPaused = false;
       // Only emit externally once per lifecycle so clients don't see a
       // duplicate "disconnected" after an explicit disconnect() call.
-      if (this.disconnectEmitted) return;
-      this.disconnectEmitted = true;
-      this.emit("disconnected");
+      if (!this.disconnectEmitted) {
+        this.disconnectEmitted = true;
+        this.emit("disconnected");
+      }
+
+      if (wasUnexpected) {
+        this._scheduleAutoReconnect();
+      }
     });
 
     this.tsClient.on("connected", () => {
@@ -580,6 +627,8 @@ export class BotInstance extends EventEmitter {
   }
 
   async connect(): Promise<void> {
+    this.manualDisconnect = false;
+    this._cancelReconnect();
     this.disconnectEmitted = false;
     await this.tsClient.connect();
     const resolvedEndpoint = this.tsClient.getResolvedVoiceEndpoint();
@@ -612,6 +661,10 @@ export class BotInstance extends EventEmitter {
   }
 
   disconnect(): void {
+    this.manualDisconnect = true;
+    this._cancelReconnect();
+    this.reconnectSnapshot = null;
+    this.reconnectAttempts = 0;
     this.occupancyGeneration++;
     this.occupancyRefreshPending = false;
     this._clearLifecycleTimers();
@@ -815,6 +868,94 @@ export class BotInstance extends EventEmitter {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
+  }
+
+  private _cancelReconnect(): void {
+    if (this.autoReconnectTimer) {
+      clearTimeout(this.autoReconnectTimer);
+      this.autoReconnectTimer = null;
+    }
+  }
+
+  private _scheduleAutoReconnect(): void {
+    if (this.manualDisconnect || this.connected) return;
+    this._cancelReconnect();
+
+    // Exponential backoff: 3s, 5s, 10s, 20s, 30s, capped at 60s
+    const delays = [3000, 5000, 10000, 20000, 30000];
+    const delay = delays[this.reconnectAttempts] ?? 60000;
+    this.reconnectAttempts++;
+
+    this.logger.warn(
+      { attempt: this.reconnectAttempts, nextDelayMs: delay, botId: this.id },
+      "Unexpected disconnect detected, scheduling auto-reconnect",
+    );
+
+    this.autoReconnectTimer = setTimeout(() => {
+      void this._attemptAutoReconnect();
+    }, delay);
+    this.autoReconnectTimer.unref?.();
+  }
+
+  private async _attemptAutoReconnect(): Promise<void> {
+    if (this.manualDisconnect || this.connected) return;
+    this.logger.info(
+      { attempt: this.reconnectAttempts, botId: this.id },
+      "Attempting auto-reconnect...",
+    );
+    try {
+      await this.connect();
+      this.reconnectAttempts = 0;
+      this.logger.info({ botId: this.id }, "Auto-reconnect succeeded");
+
+      if (this.reconnectSnapshot) {
+        const snap = this.reconnectSnapshot;
+        this.reconnectSnapshot = null;
+        if (snap.channelId && snap.channelId !== this.tsOptions.channelId) {
+          try {
+            await this.tsClient.joinChannel(snap.channelId);
+          } catch (err) {
+            this.logger.warn({ err, channelId: snap.channelId }, "Failed to restore channel after auto-reconnect");
+          }
+        }
+        if (!this.config.savedQueuesEnabled && snap.songs.length > 0) {
+          this.queue.restore({
+            songs: snap.songs,
+            currentIndex: snap.currentIndex,
+            mode: snap.mode,
+          });
+          if (snap.isFmMode && snap.fmPlatform) {
+            this.isFmMode = true;
+            this.fmProvider = this.getProviderFor(snap.fmPlatform as Platform);
+          }
+          if (snap.wasPlaying) {
+            const current = this.queue.current();
+            if (current) {
+              this.player.resetFailures();
+              await this.resolveAndPlay(current);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        { err, attempt: this.reconnectAttempts, botId: this.id },
+        "Auto-reconnect attempt failed, scheduling next retry",
+      );
+      this._scheduleAutoReconnect();
+    }
+  }
+
+  isManualDisconnect(): boolean {
+    return this.manualDisconnect;
+  }
+
+  isReconnecting(): boolean {
+    return this.autoReconnectTimer !== null;
+  }
+
+  getReconnectAttempts(): number {
+    return this.reconnectAttempts;
   }
 
   private async handleTextMessage(msg: TS3TextMessage): Promise<void> {
