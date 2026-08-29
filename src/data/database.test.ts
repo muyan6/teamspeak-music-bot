@@ -351,6 +351,63 @@ describe("database", () => {
       expect(config.channelDescEnabled).toBe(false);
       expect(config.nowPlayingMsgEnabled).toBe(false);
     });
+
+    it("newly saved bot explicitly sets defaults even if legacy table column has DEFAULT 1", () => {
+      const dir = mkdtempSync(join(tmpdir(), "tsmb-legacy-db-"));
+      const p = join(dir, "legacy.db");
+      const legacyDb = createDatabase(p);
+      // Simulate legacy table with DEFAULT 1 for channelDesc and nowPlaying
+      legacyDb.db.exec("DROP TABLE bot_instances");
+      legacyDb.db.exec(`
+        CREATE TABLE bot_instances (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          serverAddress TEXT NOT NULL,
+          serverPort INTEGER NOT NULL,
+          queryPort INTEGER,
+          nickname TEXT NOT NULL,
+          defaultChannel TEXT NOT NULL DEFAULT '',
+          channelId TEXT NOT NULL DEFAULT '',
+          channelPassword TEXT NOT NULL DEFAULT '',
+          autoStart INTEGER NOT NULL DEFAULT 1,
+          serverProtocol TEXT NOT NULL DEFAULT '',
+          ts6ApiKey TEXT NOT NULL DEFAULT '',
+          serverPassword TEXT NOT NULL DEFAULT '',
+          volume INTEGER NOT NULL DEFAULT 75,
+          play_mode TEXT NOT NULL DEFAULT 'seq',
+          profile_avatar_enabled INTEGER NOT NULL DEFAULT 1,
+          profile_description_enabled INTEGER NOT NULL DEFAULT 1,
+          profile_nickname_enabled INTEGER NOT NULL DEFAULT 1,
+          profile_away_enabled INTEGER NOT NULL DEFAULT 1,
+          profile_channel_desc_enabled INTEGER NOT NULL DEFAULT 1,
+          profile_now_playing_enabled INTEGER NOT NULL DEFAULT 1,
+          custom_avatar_path TEXT,
+          identity TEXT
+        )
+      `);
+      legacyDb.db.close();
+
+      const reopened = createDatabase(p);
+      reopened.saveBotInstance({
+        id: "legacy-new-bot",
+        name: "Legacy New Bot",
+        serverAddress: "127.0.0.1",
+        serverPort: 9987,
+        nickname: "LegacyBot",
+        defaultChannel: "",
+        channelId: "",
+        channelPassword: "",
+        autoStart: false,
+        serverProtocol: "",
+        ts6ApiKey: "",
+        serverPassword: "",
+      });
+
+      const config = reopened.getProfileConfig("legacy-new-bot");
+      expect(config.channelDescEnabled).toBe(false);
+      expect(config.nowPlayingMsgEnabled).toBe(false);
+      reopened.db.close();
+    });
   });
 });
 

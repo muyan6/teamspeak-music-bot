@@ -185,6 +185,22 @@ export class BotManager extends EventEmitter {
       params.serverPort ?? 9987
     );
 
+    this.database.saveBotInstance({
+      id,
+      name: params.name,
+      serverAddress,
+      serverPort,
+      queryPort: params.queryPort,
+      nickname: params.nickname,
+      defaultChannel: params.defaultChannel ?? "",
+      channelId: params.channelId ?? "",
+      channelPassword: params.channelPassword ?? "",
+      autoStart: params.autoStart ?? true,
+      serverProtocol: params.serverProtocol ?? "",
+      ts6ApiKey: params.ts6ApiKey ?? "",
+      serverPassword: params.serverPassword ?? "",
+    });
+
     const bot = new BotInstance({
       id,
       name: params.name,
@@ -222,22 +238,6 @@ export class BotManager extends EventEmitter {
 
     this.bots.set(id, bot);
     this.emit("botInstance", bot);
-
-    this.database.saveBotInstance({
-      id,
-      name: params.name,
-      serverAddress,
-      serverPort,
-      queryPort: params.queryPort,
-      nickname: params.nickname,
-      defaultChannel: params.defaultChannel ?? "",
-      channelId: params.channelId ?? "",
-      channelPassword: params.channelPassword ?? "",
-      autoStart: params.autoStart ?? true,
-      serverProtocol: params.serverProtocol ?? "",
-      ts6ApiKey: params.ts6ApiKey ?? "",
-      serverPassword: params.serverPassword ?? "",
-    });
 
     this.logger.info({ botId: id, name: params.name }, "Bot instance created");
     return bot;

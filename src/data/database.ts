@@ -434,8 +434,20 @@ export function createDatabase(dbPath: string): BotDatabase {
   `);
 
   const upsertInstance = db.prepare(`
-    INSERT INTO bot_instances (id, name, serverAddress, serverPort, queryPort, nickname, defaultChannel, channelId, channelPassword, autoStart, serverProtocol, ts6ApiKey, serverPassword, identity)
-    VALUES (@id, @name, @serverAddress, @serverPort, @queryPort, @nickname, @defaultChannel, @channelId, @channelPassword, @autoStart, @serverProtocol, @ts6ApiKey, @serverPassword, @identity)
+    INSERT INTO bot_instances (
+      id, name, serverAddress, serverPort, queryPort, nickname,
+      defaultChannel, channelId, channelPassword, autoStart,
+      serverProtocol, ts6ApiKey, serverPassword, identity,
+      profile_avatar_enabled, profile_description_enabled,
+      profile_nickname_enabled, profile_away_enabled,
+      profile_channel_desc_enabled, profile_now_playing_enabled
+    )
+    VALUES (
+      @id, @name, @serverAddress, @serverPort, @queryPort, @nickname,
+      @defaultChannel, @channelId, @channelPassword, @autoStart,
+      @serverProtocol, @ts6ApiKey, @serverPassword, @identity,
+      @avatar, @description, @nickname_flag, @away, @channelDesc, @nowPlaying
+    )
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       serverAddress = excluded.serverAddress,
@@ -582,6 +594,12 @@ export function createDatabase(dbPath: string): BotDatabase {
         queryPort: instance.queryPort ?? null,
         autoStart: instance.autoStart ? 1 : 0,
         identity: instance.identity ?? null,
+        avatar: DEFAULT_PROFILE_CONFIG.avatarEnabled ? 1 : 0,
+        description: DEFAULT_PROFILE_CONFIG.descriptionEnabled ? 1 : 0,
+        nickname_flag: DEFAULT_PROFILE_CONFIG.nicknameEnabled ? 1 : 0,
+        away: DEFAULT_PROFILE_CONFIG.awayStatusEnabled ? 1 : 0,
+        channelDesc: DEFAULT_PROFILE_CONFIG.channelDescEnabled ? 1 : 0,
+        nowPlaying: DEFAULT_PROFILE_CONFIG.nowPlayingMsgEnabled ? 1 : 0,
       });
     },
 
