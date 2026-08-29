@@ -200,6 +200,13 @@ export class BotInstance extends EventEmitter {
   private occupancyGeneration = 0;
   private channelUserCount = 0;
   private autoPaused = false;
+  private lastLoggedOccupancy: {
+    channelId: string;
+    clientsInChannel: number;
+    otherUsers: number;
+    playerState: string;
+    autoPaused: boolean;
+  } | null = null;
   /** True while the audible track is served by the Spotify sidecar (external
    *  PCM mode) — drives fence/handoff decisions in resolveAndPlay + cmdStop. */
   private currentSourceIsSpotify = false;
@@ -601,18 +608,38 @@ export class BotInstance extends EventEmitter {
       });
       const userCount = realListeners.length;
       this.handleOccupancy(userCount);
-      this.logger.info(
-        {
-          channelId: this.tsClient.getChannelId().toString(),
+      const channelId = this.tsClient.getChannelId().toString();
+      const playerState = this.player.getState();
+      const hasChanged =
+        !this.lastLoggedOccupancy ||
+        this.lastLoggedOccupancy.channelId !== channelId ||
+        this.lastLoggedOccupancy.clientsInChannel !== clients.length ||
+        this.lastLoggedOccupancy.otherUsers !== userCount ||
+        this.lastLoggedOccupancy.playerState !== playerState ||
+        this.lastLoggedOccupancy.autoPaused !== this.autoPaused;
+
+      const logPayload = {
+        channelId,
+        clientsInChannel: clients.length,
+        listeners: realListeners.map((l) => ({ id: l.id, name: l.nickname, type: l.type })),
+        otherUsers: userCount,
+        playerState,
+        autoPauseOnEmpty: this.config.autoPauseOnEmpty,
+        autoPaused: this.autoPaused,
+      };
+
+      if (hasChanged) {
+        this.lastLoggedOccupancy = {
+          channelId,
           clientsInChannel: clients.length,
-          listeners: realListeners.map((l) => ({ id: l.id, name: l.nickname, type: l.type })),
           otherUsers: userCount,
-          playerState: this.player.getState(),
-          autoPauseOnEmpty: this.config.autoPauseOnEmpty,
+          playerState,
           autoPaused: this.autoPaused,
-        },
-        "Channel occupancy evaluated"
-      );
+        };
+        this.logger.info(logPayload, "Channel occupancy evaluated");
+      } else {
+        this.logger.debug(logPayload, "Channel occupancy evaluated (unchanged)");
+      }
     } catch (err) {
       this.logger.warn({ err }, "refreshOccupancy failed");
     } finally {
@@ -669,6 +696,7 @@ export class BotInstance extends EventEmitter {
     this.occupancyRefreshPending = false;
     this._clearLifecycleTimers();
     this._cancelIdleTimer();
+    this.lastLoggedOccupancy = null;
     if (this.autoReturnTimer) {
       clearTimeout(this.autoReturnTimer);
       this.autoReturnTimer = null;
