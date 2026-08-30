@@ -107,6 +107,8 @@ async function main() {
   if (neteaseCookie) neteaseProvider.setCookie(neteaseCookie);
   const qqCookie = cookieStore.load("qq");
   if (qqCookie) qqProvider.setCookie(qqCookie);
+  qqProvider.setPersist((cookie) => cookieStore.save("qq", cookie));
+  qqProvider.startKeepAlive();
   const bilibiliCookie = cookieStore.load("bilibili");
   if (bilibiliCookie) bilibiliProvider.setCookie(bilibiliCookie);
   const kugouCookie = cookieStore.load("kugou");
@@ -197,6 +199,7 @@ async function main() {
 
   const shutdown = () => {
     logger.info("Shutting down...");
+    qqProvider.stopKeepAlive();
     botManager.shutdown();
     webServer.stop();
     apiServer.stop();

@@ -99,6 +99,61 @@ function computeGtk(pSkey: string): number {
   return hash & 0x7fffffff;
 }
 
+/** Parse Cookie string into key-value map. */
+export function parseCookieString(cookieHeader: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  if (!cookieHeader) return map;
+  const parts = cookieHeader.split(";");
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) {
+      map[trimmed] = "";
+    } else {
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim();
+      if (key) map[key] = val;
+    }
+  }
+  return map;
+}
+
+/** Serialize key-value map into Cookie string. */
+export function serializeCookieMap(map: Record<string, string>): string {
+  return Object.entries(map)
+    .filter(([k]) => Boolean(k))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
+}
+
+/** Update or add a key-value in a Cookie string. */
+export function updateCookieKey(cookieHeader: string, key: string, value: string): string {
+  const map = parseCookieString(cookieHeader);
+  map[key] = value;
+  return serializeCookieMap(map);
+}
+
+/** Merge Set-Cookie headers or raw cookie string into an existing cookie string. */
+export function mergeCookies(oldCookie: string, newCookies: string | string[] | undefined): string {
+  if (!newCookies) return oldCookie;
+  const map = parseCookieString(oldCookie);
+  const cookieList = Array.isArray(newCookies) ? newCookies : [newCookies];
+  for (const item of cookieList) {
+    if (!item) continue;
+    const firstPart = item.split(";")[0]?.trim();
+    if (firstPart) {
+      const eqIdx = firstPart.indexOf("=");
+      if (eqIdx !== -1) {
+        const k = firstPart.slice(0, eqIdx).trim();
+        const v = firstPart.slice(eqIdx + 1).trim();
+        if (k) map[k] = v;
+      }
+    }
+  }
+  return serializeCookieMap(map);
+}
+
 export const QQ_QUALITY_LEVELS = [
   { value: "standard", label: "标准 (128kbps)", bitrate: 128 },
   { value: "higher", label: "较高 (192kbps)", bitrate: 192 },
@@ -113,6 +168,8 @@ export class QQMusicProvider implements MusicProvider {
   private cookie = "";
   private quality = "exhigh";
   private radarPage = 1;
+  private persistFn?: (cookie: string) => void;
+  private keepAliveTimer?: NodeJS.Timeout;
 
   constructor(baseUrl: string) {
     this.api = axios.create({
@@ -531,13 +588,142 @@ export class QQMusicProvider implements MusicProvider {
     const body = res.data;
     if (body?.isOk === true) {
       const cookie: string = body.session?.cookie ?? "";
-      if (cookie) this.cookie = cookie;
+      if (cookie) {
+        this.cookie = cookie;
+        this.persistFn?.(this.cookie);
+      }
       return "confirmed";
     }
     if (body?.refresh === true) return "expired";
     if (typeof body?.message === "string" && body.message.includes("未扫描"))
       return "waiting";
     return "waiting";
+  }
+
+  setPersist(fn: (cookie: string) => void): void {
+    this.persistFn = fn;
+  }
+
+  startKeepAlive(intervalMs = 30 * 60 * 1000): void {
+    this.stopKeepAlive();
+    this.keepAliveTimer = setInterval(() => {
+      void this.refreshSession().catch(() => {});
+    }, intervalMs);
+    if (this.keepAliveTimer.unref) {
+      this.keepAliveTimer.unref();
+    }
+  }
+
+  stopKeepAlive(): void {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = undefined;
+    }
+  }
+
+  /**
+   * Refresh session credentials via musicu.fcg or ping to prevent idle session timeout.
+   * If OAuth refresh_token / psrf_ fields exist, performs OAuth token renewal.
+   * Otherwise, sends a keep-alive request to maintain active session.
+   */
+  async refreshSession(): Promise<{ success: boolean; refreshed: boolean }> {
+    if (!this.cookie) return { success: false, refreshed: false };
+
+    const cookieMap = parseCookieString(this.cookie);
+    const uinMatch = /(?:^|; )(?:uin|qqmusic_uin)=o?0?(\d+)/.exec(this.cookie);
+    const uin = uinMatch ? uinMatch[1] : (cookieMap.uin || cookieMap.qqmusic_uin || "");
+    const refreshToken = cookieMap.psrf_qqrefresh_token || cookieMap.refresh_token || "";
+    const openid = cookieMap.psrf_qqopenid || cookieMap.openid || "";
+    const accessToken = cookieMap.psrf_qqaccess_token || cookieMap.access_token || "";
+    const musickey = cookieMap.musickey || cookieMap.qqmusic_key || cookieMap.qm_keyst || "";
+
+    // 1. OAuth / Token renewal if refresh_token is present
+    if (refreshToken && uin) {
+      try {
+        const payload = {
+          comm: {
+            ct: 24,
+            cv: 4747474,
+            platform: "yqq.json",
+            uin: uin || "0",
+            g_tk: 5381,
+            format: "json",
+          },
+          req: {
+            module: "QQConnectLogin.LoginServer",
+            method: "QQLogin",
+            param: {
+              musicid: Number(uin),
+              musickey: musickey,
+              refresh_token: refreshToken,
+              openid: openid,
+              access_token: accessToken,
+            },
+          },
+        };
+
+        const res = await qqMusicuApi.post("/cgi-bin/musicu.fcg", payload, {
+          headers: {
+            referer: "https://y.qq.com/",
+            ...this.directCookieHeaders,
+          },
+        });
+
+        const data = res.data?.req?.data ?? res.data?.req_0?.data;
+        const qmKey = data?.qqmusic_key ?? data?.musickey ?? data?.encrypted_string;
+        const newMusickey = data?.musickey;
+        let updated = false;
+
+        if (qmKey) {
+          this.cookie = updateCookieKey(this.cookie, "qqmusic_key", qmKey);
+          updated = true;
+        }
+        if (newMusickey) {
+          this.cookie = updateCookieKey(this.cookie, "musickey", newMusickey);
+          updated = true;
+        }
+
+        const setCookieHeader = res.headers?.["set-cookie"];
+        if (setCookieHeader) {
+          const merged = mergeCookies(this.cookie, setCookieHeader);
+          if (merged !== this.cookie) {
+            this.cookie = merged;
+            updated = true;
+          }
+        }
+
+        if (updated) {
+          this.persistFn?.(this.cookie);
+          return { success: true, refreshed: true };
+        }
+      } catch {
+        // Fall through to ping fallback
+      }
+    }
+
+    // 2. Inactivity Keep-Alive Ping fallback
+    if (uin) {
+      try {
+        const res = await this.api.get("/user/getUserPlaylists", {
+          params: { uin, ...this.cookieParams },
+        });
+        if (res.data?.response?.code === 0) {
+          const setCookieHeader = res.headers?.["set-cookie"];
+          if (setCookieHeader) {
+            const merged = mergeCookies(this.cookie, setCookieHeader);
+            if (merged !== this.cookie) {
+              this.cookie = merged;
+              this.persistFn?.(this.cookie);
+            }
+          }
+          return { success: true, refreshed: false };
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return { success: false, refreshed: false };
   }
 
   setCookie(cookie: string): void {

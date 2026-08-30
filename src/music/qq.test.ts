@@ -8,7 +8,16 @@ vi.mock("axios", () => ({
   default: { create: () => ({ get: mockGet, post: mockPost }) },
 }));
 
-import { mapQqAlbums, mapQqSongs, parseQqTrial, QQMusicProvider } from "./qq.js";
+import {
+  mapQqAlbums,
+  mapQqSongs,
+  parseQqTrial,
+  QQMusicProvider,
+  parseCookieString,
+  serializeCookieMap,
+  updateCookieKey,
+  mergeCookies,
+} from "./qq.js";
 
 describe("QQ adapter", () => {
   it("mapQqSongs maps QQMusicApi-style song entries", () => {
@@ -181,3 +190,143 @@ describe("QQMusicProvider.search pagination", () => {
     expect(p.getQuality()).toBe("lossless"); // unchanged
   });
 });
+
+describe("QQ cookie helpers", () => {
+  it("parseCookieString parses raw cookie header correctly", () => {
+    const parsed = parseCookieString("uin=123456; qqmusic_key=abc123xyz; p_skey=pskey_val; ");
+    expect(parsed).toEqual({
+      uin: "123456",
+      qqmusic_key: "abc123xyz",
+      p_skey: "pskey_val",
+    });
+  });
+
+  it("parseCookieString handles empty or invalid cookies", () => {
+    expect(parseCookieString("")).toEqual({});
+    expect(parseCookieString("flag; key=val")).toEqual({
+      flag: "",
+      key: "val",
+    });
+  });
+
+  it("serializeCookieMap converts map back to string", () => {
+    const s = serializeCookieMap({ uin: "123", key: "abc" });
+    expect(s).toBe("uin=123; key=abc");
+  });
+
+  it("updateCookieKey replaces or inserts a specific key", () => {
+    const original = "uin=123; qqmusic_key=old_key";
+    const updated = updateCookieKey(original, "qqmusic_key", "new_key");
+    expect(updated).toBe("uin=123; qqmusic_key=new_key");
+
+    const inserted = updateCookieKey(original, "musickey", "m_val");
+    expect(inserted).toBe("uin=123; qqmusic_key=old_key; musickey=m_val");
+  });
+
+  it("mergeCookies merges single or multiple set-cookie lines", () => {
+    const base = "uin=123; qqmusic_key=old";
+    const merged = mergeCookies(base, [
+      "qqmusic_key=renewed; Path=/; Domain=.qq.com; HttpOnly",
+      "p_skey=new_pskey; Path=/",
+    ]);
+    expect(merged).toContain("uin=123");
+    expect(merged).toContain("qqmusic_key=renewed");
+    expect(merged).toContain("p_skey=new_pskey");
+  });
+});
+
+describe("QQMusicProvider.refreshSession & keepAlive", () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockPost.mockReset();
+  });
+
+  it("returns { success: false, refreshed: false } when no cookie set", async () => {
+    const p = new QQMusicProvider("http://x");
+    const res = await p.refreshSession();
+    expect(res).toEqual({ success: false, refreshed: false });
+  });
+
+  it("renews token via musicu.fcg when psrf_qqrefresh_token is present", async () => {
+    mockPost.mockResolvedValueOnce({
+      data: {
+        req: {
+          data: {
+            musickey: "new_musickey_val",
+            qqmusic_key: "new_qqmusic_key_val",
+          },
+        },
+      },
+    });
+
+    const p = new QQMusicProvider("http://x");
+    let persistedCookie = "";
+    p.setPersist((cookie) => {
+      persistedCookie = cookie;
+    });
+
+    p.setCookie("uin=10001; psrf_qqrefresh_token=mock_refresh_token; psrf_qqopenid=mock_openid; qqmusic_key=old_key");
+
+    const res = await p.refreshSession();
+    expect(res).toEqual({ success: true, refreshed: true });
+    expect(mockPost).toHaveBeenCalledWith(
+      "/cgi-bin/musicu.fcg",
+      expect.objectContaining({
+        req: {
+          module: "QQConnectLogin.LoginServer",
+          method: "QQLogin",
+          param: expect.objectContaining({
+            musicid: 10001,
+            refresh_token: "mock_refresh_token",
+            openid: "mock_openid",
+          }),
+        },
+      }),
+      expect.anything()
+    );
+
+    expect(p.getCookie()).toContain("qqmusic_key=new_qqmusic_key_val");
+    expect(p.getCookie()).toContain("musickey=new_musickey_val");
+    expect(persistedCookie).toBe(p.getCookie());
+  });
+
+  it("falls back to keep-alive ping when only basic web cookies exist", async () => {
+    mockGet.mockResolvedValueOnce({
+      data: {
+        response: { code: 0 },
+      },
+      headers: {
+        "set-cookie": ["qqmusic_key=ping_renewed; Path=/; Domain=.qq.com"],
+      },
+    });
+
+    const p = new QQMusicProvider("http://x");
+    let persistedCookie = "";
+    p.setPersist((cookie) => {
+      persistedCookie = cookie;
+    });
+
+    p.setCookie("uin=20002; p_skey=some_pskey; qqmusic_key=web_key");
+
+    const res = await p.refreshSession();
+    expect(res).toEqual({ success: true, refreshed: false });
+    expect(mockGet).toHaveBeenCalledWith(
+      "/user/getUserPlaylists",
+      expect.objectContaining({
+        params: expect.objectContaining({ uin: "20002" }),
+      })
+    );
+
+    expect(p.getCookie()).toContain("qqmusic_key=ping_renewed");
+    expect(persistedCookie).toContain("qqmusic_key=ping_renewed");
+  });
+
+  it("starts and stops keep-alive timer cleanly", () => {
+    const p = new QQMusicProvider("http://x");
+    p.startKeepAlive(60000);
+    p.stopKeepAlive();
+    // Verify calling stopKeepAlive repeatedly is safe
+    expect(() => p.stopKeepAlive()).not.toThrow();
+  });
+});
+
