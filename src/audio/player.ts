@@ -209,8 +209,8 @@ export class AudioPlayer extends EventEmitter {
   private seekOffset = 0;
   private framesPlayed = 0;
   private sessionId = 0;
-  private static readonly BUFFER_HIGH_WATER = 640 * 1024;
-  private static readonly BUFFER_LOW_WATER = 256 * 1024;
+  private static readonly BUFFER_HIGH_WATER = 48 * 1024 * 1024;
+  private static readonly BUFFER_LOW_WATER = 16 * 1024 * 1024;
   private ffmpegPaused = false;
   private spawnFailed = false;
   private consecutiveFailures = 0;
