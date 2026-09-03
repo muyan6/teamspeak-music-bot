@@ -26,6 +26,7 @@ export class BotProfileManager {
   private config: ProfileConfig;
   private defaultNickname: string;
   private customAvatar: Buffer | null = null;
+  private currentAvatarMd5: string | null = null;
   /**
    * Tracks the last song handed to onSongChange. null means stopped/idle.
    * Used by setCustomAvatar to decide whether the new buffer should be
@@ -134,6 +135,7 @@ export class BotProfileManager {
   onConnect(): void {
     this.generation++;
     this.currentSong = null;
+    this.currentAvatarMd5 = null;
     this.permDenied = {
       avatar: false,
       description: false,
@@ -183,10 +185,17 @@ export class BotProfileManager {
         return;
       }
 
+      const md5 = createHash("md5").update(imageBuffer).digest("hex");
+      if (this.currentAvatarMd5 === md5) {
+        this.logger.debug({ md5 }, "Avatar unchanged, skipping upload");
+        return;
+      }
+
       // Wrap the file-transfer sequence with a timeout — the TS3
       // full-client file transfer can silently hang.
       const start = Date.now();
-      await this.withTimeout(this.doAvatarUpload(imageBuffer), FILE_TRANSFER_TIMEOUT_MS);
+      await this.withTimeout(this.doAvatarUpload(imageBuffer, md5), FILE_TRANSFER_TIMEOUT_MS);
+      this.currentAvatarMd5 = md5;
       this.logger.info(
         { bytes: imageBuffer.length, elapsedMs: Date.now() - start },
         "Avatar updated",
@@ -206,7 +215,7 @@ export class BotProfileManager {
    * clients showing a placeholder. The flag is now only set after the TCP
    * transfer resolves.
    */
-  private async doAvatarUpload(imageBuffer: Buffer): Promise<void> {
+  private async doAvatarUpload(imageBuffer: Buffer, md5: string): Promise<void> {
     const host = this.tsClient.getHost();
     this.logger.debug({ bytes: imageBuffer.length, host }, "Avatar: init file transfer");
     const info = await this.tsClient.fileTransferInitUpload(
@@ -214,7 +223,6 @@ export class BotProfileManager {
     );
     this.logger.debug({ bytes: imageBuffer.length }, "Avatar: uploading file data");
     await this.tsClient.uploadFileData(host, info, Readable.from(imageBuffer));
-    const md5 = createHash("md5").update(imageBuffer).digest("hex");
     this.logger.debug({ md5 }, "Avatar: setting client_flag_avatar");
     await this.tsClient.sendCommandNoWait(`clientupdate client_flag_avatar=${escapeTS3(md5)}`);
   }
@@ -224,6 +232,7 @@ export class BotProfileManager {
       await this.applyIdleAvatar(gen);
       return;
     }
+    this.currentAvatarMd5 = null;
     try {
       await this.withTimeout(
         this.tsClient.fileTransferDeleteFile(0n, ["/avatar"]),
@@ -243,9 +252,12 @@ export class BotProfileManager {
   private async applyIdleAvatar(gen: number): Promise<void> {
     if (!this.customAvatar || this.customAvatar.length === 0) return;
     if (this.permDenied.avatar) return;
+    const md5 = createHash("md5").update(this.customAvatar).digest("hex");
+    if (this.currentAvatarMd5 === md5) return;
     try {
-      await this.withTimeout(this.doAvatarUpload(this.customAvatar), FILE_TRANSFER_TIMEOUT_MS);
+      await this.withTimeout(this.doAvatarUpload(this.customAvatar, md5), FILE_TRANSFER_TIMEOUT_MS);
       if (this.generation !== gen) return;
+      this.currentAvatarMd5 = md5;
       this.logger.info({ bytes: this.customAvatar.length }, "Idle (custom) avatar applied");
     } catch (err) {
       this.handleFeatureError("avatar", err);

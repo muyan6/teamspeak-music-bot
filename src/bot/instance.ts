@@ -27,6 +27,7 @@ import {
 } from "../data/config.js";
 import type { JellyfinPlaybackReporter } from "../music/jellyfin.js";
 import { BotProfileManager } from "./profile.js";
+import { BotCommandHandler } from "./command-handler.js";
 import type { AvatarStore } from "../data/avatars.js";
 import {
   decideOccupancyAction,
@@ -155,12 +156,17 @@ export interface BotStatus {
   effectiveDuration?: number;
 }
 
+function getOrCreateHandler(target: any): BotCommandHandler {
+  if (target && target.commandHandler) return target.commandHandler;
+  return new BotCommandHandler(target);
+}
+
 export class BotInstance extends EventEmitter {
   readonly id: string;
   name: string;
 
-  private tsClient: TS3Client;
-  private player: AudioPlayer;
+  readonly tsClient: TS3Client;
+  readonly player: AudioPlayer;
   private voiceDucking: VoiceDuckingController;
   private managedVoiceClients: ManagedVoiceClientRegistry;
   private readonly configuredVoiceServerScope: ManagedVoiceClientScope;
@@ -169,8 +175,8 @@ export class BotInstance extends EventEmitter {
   private registeredVoiceClientOwner: ManagedVoiceClientOwnerToken | null = null;
   private registeredVoiceClientScope: ManagedVoiceClientScope | null = null;
   private registeredVoiceClientUid: string | null = null;
-  private spotifyController: SpotifyController;
-  private queue: PlayQueue;
+  readonly spotifyController: SpotifyController;
+  readonly queue: PlayQueue;
   private neteaseProvider: MusicProvider;
   private qqProvider: MusicProvider;
   private bilibiliProvider: MusicProvider;
@@ -179,18 +185,18 @@ export class BotInstance extends EventEmitter {
   private kugouProvider: MusicProvider;
   private spotifyProvider: MusicProvider;
   private jellyfinProvider: MusicProvider;
-  private database: BotDatabase;
-  private config: BotConfig;
-  private logger: Logger;
+  readonly database: BotDatabase;
+  readonly config: BotConfig;
+  readonly logger: Logger;
   private avatarStore: AvatarStore;
   private tsOptions: TS3ClientOptions;
-  private connected = false;
+  connected = false;
   private disconnectEmitted = false;
   private manualDisconnect = false;
   private autoReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private reconnectSnapshot: ReconnectSnapshot | null = null;
-  private voteSkipUsers = new Set<string>();
+  voteSkipUsers = new Set<string>();
   private isAdvancing = false;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private idlePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -199,7 +205,8 @@ export class BotInstance extends EventEmitter {
   private occupancyRefreshPending = false;
   private occupancyGeneration = 0;
   private channelUserCount = 0;
-  private autoPaused = false;
+  autoPaused = false;
+  private occupancyConsecutiveFailures = 0;
   private lastLoggedOccupancy: {
     channelId: string;
     clientsInChannel: number;
@@ -209,11 +216,12 @@ export class BotInstance extends EventEmitter {
   } | null = null;
   /** True while the audible track is served by the Spotify sidecar (external
    *  PCM mode) — drives fence/handoff decisions in resolveAndPlay + cmdStop. */
-  private currentSourceIsSpotify = false;
-  private profileManager: BotProfileManager;
-  private isFmMode = false;
-  private fmProvider: MusicProvider | null = null;
-  private fmRequesterName: string | undefined;
+  currentSourceIsSpotify = false;
+  readonly profileManager: BotProfileManager;
+  isFmMode = false;
+  fmProvider: MusicProvider | null = null;
+  fmRequesterName: string | undefined;
+  readonly commandHandler: BotCommandHandler;
   /** Results of the most recent !search, for "#N" selection (issue #90). */
   private lastSearchResults: Song[] = [];
   /** 当前曲实际播放时长（试听片段秒数或完整 duration）；resolveAndPlay 赋值。 */
@@ -221,7 +229,7 @@ export class BotInstance extends EventEmitter {
   private playGate: Promise<unknown> = Promise.resolve();
   /** Per-bot Jellyfin playback-report session (start / ~10s progress / stop).
    *  null when the wired provider has no reporting capability. */
-  private jellyfinReporter: JellyfinPlaybackReporter | null = null;
+  jellyfinReporter: JellyfinPlaybackReporter | null = null;
   /** Debounce handle for the live-queue snapshot writer (Feature 2, #119). */
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private autoReturnTimer: ReturnType<typeof setTimeout> | null = null;
@@ -341,6 +349,7 @@ export class BotInstance extends EventEmitter {
 
     this.setupPlayerEvents();
     this.setupTsEvents();
+    this.commandHandler = new BotCommandHandler(this);
 
     // Feature 2 (#119): persist a debounced snapshot of the live queue whenever
     // it changes, so it can be restored + resumed after a restart. Inert unless
@@ -397,7 +406,7 @@ export class BotInstance extends EventEmitter {
     this.sweepLocalAudio(reason);
   }
 
-  private sweepLocalAudio(reason: string): void {
+  sweepLocalAudio(reason: string): void {
     const provider = this.localProvider as MusicProvider & {
       sweepUnreferenced?: () => string[];
     };
@@ -628,6 +637,7 @@ export class BotInstance extends EventEmitter {
         autoPaused: this.autoPaused,
       };
 
+      this.occupancyConsecutiveFailures = 0;
       if (hasChanged) {
         this.lastLoggedOccupancy = {
           channelId,
@@ -641,7 +651,9 @@ export class BotInstance extends EventEmitter {
         this.logger.debug(logPayload, "Channel occupancy evaluated (unchanged)");
       }
     } catch (err) {
-      this.logger.warn({ err }, "refreshOccupancy failed");
+      this.occupancyConsecutiveFailures++;
+      const backoffSec = Math.min(300, 30 * Math.pow(2, Math.min(4, this.occupancyConsecutiveFailures - 1)));
+      this.logger.warn({ err, consecutiveFailures: this.occupancyConsecutiveFailures, backoffSec }, "refreshOccupancy failed");
     } finally {
       this.occupancyRefreshInFlight = false;
       if (this.occupancyRefreshPending) {
@@ -1092,92 +1104,7 @@ export class BotInstance extends EventEmitter {
     msg?: TS3TextMessage,
     requesterName?: string,
   ): Promise<string | null> {
-    // Reject commands that would push audio when the bot isn't connected:
-    // otherwise ffmpeg spawns and voice goes to a half-initialized or
-    // torn-down TS client, leaving player.state="playing" on a disconnected
-    // bot. Config-only commands (vol, mode, clear, stop, queue, now) are
-    // still allowed so the UI stays usable while the bot is offline.
-    const AUDIO_COMMANDS = new Set([
-      "play",
-      "add",
-      "playnext",
-      "pn",
-      "next",
-      "skip",
-      "prev",
-      "playlist",
-      "album",
-      "fm",
-      "artist",
-    ]);
-    if (!this.connected && AUDIO_COMMANDS.has(cmd.name)) {
-      throw new Error("Bot is not connected to TeamSpeak");
-    }
-    switch (cmd.name) {
-      case "search":
-      case "find":
-        return this.cmdSearch(cmd);
-      case "play":
-        return this.cmdPlay(cmd, requesterName);
-      case "add":
-        return this.cmdAdd(cmd, requesterName);
-      case "playnext":
-      case "pn":
-        return this.cmdPlayNext(cmd, requesterName);
-      case "pause":
-        return this.cmdPause();
-      case "resume":
-        return this.cmdResume();
-      case "stop":
-        return this.cmdStop();
-      case "next":
-      case "skip":
-        return this.cmdNext();
-      case "prev":
-        return this.cmdPrev();
-      case "vol":
-        return this.cmdVol(cmd);
-      case "now":
-        return this.cmdNow();
-      case "queue":
-      case "list":
-        return this.cmdQueue();
-      case "clear":
-        return this.cmdClear();
-      case "remove":
-        return this.cmdRemove(cmd);
-      case "mode":
-        return this.cmdMode(cmd);
-      case "playlist":
-        return this.cmdPlaylist(cmd, requesterName);
-      case "album":
-        return this.cmdAlbum(cmd, requesterName);
-      case "fm":
-        return this.cmdFm(cmd, requesterName);
-      case "artist":
-        return this.cmdArtist(cmd, requesterName);
-      case "vote":
-        return this.cmdVote(msg);
-      case "lyrics":
-        return this.cmdLyrics();
-      case "move":
-        return this.cmdMove(cmd);
-      case "home":
-      case "default":
-        return this.cmdHome();
-      case "follow":
-        return this.cmdFollow(msg);
-      case "save":
-        return this.cmdSaveQueue(cmd);
-      case "load":
-        return this.cmdLoadQueue(cmd);
-      case "queues":
-        return this.cmdListQueues();
-      case "help":
-        return this.cmdHelp();
-      default:
-        return `Unknown command: ${cmd.name}. Type ${this.config.commandPrefix}help for help.`;
-    }
+    return this.commandHandler.execute(cmd, msg, requesterName);
   }
 
   getProviderFor(platform: Platform): MusicProvider {
@@ -1205,7 +1132,7 @@ export class BotInstance extends EventEmitter {
     }
   }
 
-  private disableFmMode(): void {
+  disableFmMode(): void {
     this.isFmMode = false;
     this.fmProvider = null;
     this.fmRequesterName = undefined;
@@ -1214,7 +1141,7 @@ export class BotInstance extends EventEmitter {
   /** Chat-command source flags. No flag → the configured default platform
    *  (netease in the default config; otherwise the first enabled source by
    *  fixed priority — see defaultPlatform()). */
-  private static readonly FLAG_PLATFORMS: ReadonlyArray<[string, Platform]> = [
+  public static readonly FLAG_PLATFORMS: ReadonlyArray<[string, Platform]> = [
     ["b", "bilibili"],
     ["q", "qq"],
     ["y", "youtube"],
@@ -1225,7 +1152,7 @@ export class BotInstance extends EventEmitter {
     ["j", "jellyfin"],
   ];
 
-  private getProvider(flags: Set<string>): MusicProvider {
+  getProvider(flags: Set<string>): MusicProvider {
     for (const [flag, platform] of BotInstance.FLAG_PLATFORMS) {
       if (flags.has(flag)) {
         this.assertProviderEnabled(platform);
@@ -1242,7 +1169,7 @@ export class BotInstance extends EventEmitter {
     return name || undefined;
   }
 
-  private withRequester<T extends Song | QueuedSong>(
+  withRequester<T extends Song | QueuedSong>(
     song: T,
     requesterName?: string,
   ): T & { requestedBy?: string } {
@@ -1304,19 +1231,22 @@ export class BotInstance extends EventEmitter {
   }
 
   private preFetchNextTrack(): void {
-    const nextSong = this.queue.peekNext();
-    if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") return;
+    const list = this.queue.list();
+    const candidates = list.slice(0, 2);
+    for (const nextSong of candidates) {
+      if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") continue;
 
-    const cacheKey = `${nextSong.platform}:${nextSong.id}`;
-    if (this.urlCache.has(cacheKey)) return;
+      const cacheKey = `${nextSong.platform}:${nextSong.id}`;
+      if (this.urlCache.has(cacheKey)) continue;
 
-    const provider = this.getProviderFor(nextSong.platform);
-    provider.getSongUrl(nextSong.id).then((res) => {
-      if (res?.url) {
-        this.urlCache.set(cacheKey, res);
-        this.logger.debug({ songId: nextSong.id }, "Pre-resolved next track URL");
-      }
-    }).catch(() => {});
+      const provider = this.getProviderFor(nextSong.platform);
+      provider.getSongUrl(nextSong.id).then((res) => {
+        if (res?.url) {
+          this.urlCache.set(cacheKey, res);
+          this.logger.debug({ songId: nextSong.id }, "Pre-resolved next track URL");
+        }
+      }).catch(() => {});
+    }
   }
 
   /** Resolve URL for a song and start playing it. Skips to next if URL fails. */
@@ -1504,70 +1434,6 @@ export class BotInstance extends EventEmitter {
   }
 
   /**
-   * Resolve a !play/!add/!playnext argument into a single Song, supporting three
-   * forms (issue #90):
-   *   1) "#N"           — the Nth result of the previous !search
-   *   2) id <id> / URL  — an exact song (disambiguates same-name songs)
-   *   3) plain text     — search, returning the single most-popular hit (legacy)
-   */
-  private async resolvePlayQuery(cmd: ParsedCommand): Promise<{ song?: Song; error?: string }> {
-    const args = (cmd.args ?? "").trim();
-    const p = this.config.commandPrefix;
-
-    // 1) "#N" — pick from the previous !search.
-    const sel = parseSelectionIndex(args);
-    if (sel !== null) {
-      if (this.lastSearchResults.length === 0)
-        return { error: `No recent search. Use ${p}search <name> first.` };
-      if (sel > this.lastSearchResults.length)
-        return { error: `Invalid selection #${sel}. ${p}search returned ${this.lastSearchResults.length} results.` };
-      return { song: this.lastSearchResults[sel - 1] };
-    }
-
-    // 2) id/URL — fetch that exact song.
-    const ref = parseSongRef(args);
-    if (ref) {
-      if (ref.platform) this.assertProviderEnabled(ref.platform);
-      const provider = ref.platform ? this.getProviderFor(ref.platform) : this.getProvider(cmd.flags);
-      const song = await provider.getSongDetail(ref.id);
-      if (!song) return { error: `No song found for ${ref.platform ?? provider.platform} id: ${ref.id}` };
-      return { song: { ...song, platform: provider.platform } };
-    }
-
-    // 3) Plain search term — single most-popular hit (historical behavior).
-    const provider = this.getProvider(cmd.flags);
-    const result = await provider.search(args, 1, 0, "song");
-    if (result.songs.length === 0) return { error: `No results found for: ${args}` };
-    return { song: { ...result.songs[0], platform: provider.platform } };
-  }
-
-  private async cmdSearch(cmd: ParsedCommand): Promise<string> {
-    const p = this.config.commandPrefix;
-    if (!cmd.args) return `Usage: ${p}search <name> [-q|-k|-b|-y]`;
-    const provider = this.getProvider(cmd.flags);
-    const result = await provider.search(cmd.args, 8, 0, "song");
-    if (result.songs.length === 0) return `No results found for: ${cmd.args}`;
-    this.lastSearchResults = result.songs.map((s) => ({ ...s, platform: provider.platform }));
-    const lines = this.lastSearchResults.map(
-      (s, i) => `${i + 1}. ${s.name} - ${s.artist}${s.album ? ` 《${s.album}》` : ""} [id:${s.id}]`,
-    );
-    return [
-      `搜索结果（用 ${p}play #序号 播放，或 ${p}play id <id>）:`,
-      ...lines,
-    ].join("\n");
-  }
-
-  private async cmdPlay(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return `Usage: ${this.config.commandPrefix}play <song name | #N | id <id> | URL>`;
-    const { song, error } = await this.resolvePlayQuery(cmd);
-    if (error) return error;
-    const song0 = song!;
-    const ok = await this.playSingleSong(song0, requesterName);
-    if (!ok) return `Cannot play: ${song0.name}`;
-    return `Now playing: ${song0.name} - ${song0.artist}`;
-  }
-
-  /**
    * Play a single resolved song immediately, honoring config.playKeepsQueue:
    *  - false (default): clear the queue and play only this song — today's
    *    behavior. The prior track is stopped and released local uploads swept.
@@ -1651,142 +1517,9 @@ export class BotInstance extends EventEmitter {
     this.emit("stateChange");
   }
 
-  private async cmdAdd(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return `Usage: ${this.config.commandPrefix}add <song name | #N | id <id> | URL>`;
-    const { song, error } = await this.resolvePlayQuery(cmd);
-    if (error) return error;
-    const s = song!;
-
-    const wasIdle = this.player.getState() === "idle";
-    this.queue.add(this.withRequester(s, requesterName));
-
-    // If nothing was playing, start this newly-added song immediately.
-    // Matches /api/player/:id/add-by-id behavior so both add paths feel
-    // the same to the user (add to idle bot → plays now).
-    if (wasIdle) {
-      this.queue.playAt(this.queue.size() - 1);
-      this.player.resetFailures();
-      await this.resolveAndPlay(this.queue.current()!);
-      this.emit("stateChange");
-      return `Now playing: ${s.name} - ${s.artist}`;
-    }
-
-    this.emit("stateChange");
-    return `Added to queue: ${s.name} - ${s.artist} (position ${this.queue.size()})`;
-  }
-
-  private async cmdPlayNext(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return `Usage: ${this.config.commandPrefix}playnext <song name | #N | id <id> | URL>`;
-    const { song, error } = await this.resolvePlayQuery(cmd);
-    if (error) return error;
-    const s = song!;
-
-    const wasIdle = this.player.getState() === "idle";
-    // Capture the slot addNext WILL insert at, before mutating the queue.
-    // addNext pushes when currentIndex<0 (slot = size); otherwise splices
-    // at currentIndex+1. Using size-1 after addNext was wrong when the
-    // queue had stale currentIndex>=0 while the player was idle (e.g.,
-    // after natural track end without queue.clear()).
-    const insertedAt =
-      this.queue.getCurrentIndex() < 0
-        ? this.queue.size()
-        : this.queue.getCurrentIndex() + 1;
-    this.queue.addNext(this.withRequester(s, requesterName));
-
-    if (wasIdle) {
-      this.queue.playAt(insertedAt);
-      this.player.resetFailures();
-      const ok = await this.resolveAndPlay(this.queue.current()!);
-      this.emit("stateChange");
-      if (!ok) return `Cannot play: ${s.name}`;
-      return `Now playing: ${s.name} - ${s.artist}`;
-    }
-
-    this.emit("stateChange");
-    return `Up next: ${s.name} - ${s.artist}`;
-  }
-
-  private cmdPause(): string {
-    this.player.pause();
-    if (this.queue.current()?.platform === "spotify") {
-      this.spotifyController.pause().catch((err) =>
-        this.logger.warn({ err }, "Spotify pause failed"));
-    }
-    // User-initiated pause — clear auto-pause so occupancy won't auto-resume it.
-    this.autoPaused = false;
-    this.emit("stateChange");
-    return "Paused";
-  }
-
-  private cmdResume(): string {
-    this.player.resume();
-    if (this.queue.current()?.platform === "spotify") {
-      this.spotifyController.resume().catch((err) =>
-        this.logger.warn({ err }, "Spotify resume failed"));
-    }
-    // User-initiated resume — drop any auto-pause flag.
-    this.autoPaused = false;
-    this.emit("stateChange");
-    return "Resumed";
-  }
-
-  private cmdStop(): string {
-    // Read the current song BEFORE queue.clear() so we can tell whether the
-    // sidecar needs stopping.
-    if (this.queue.current()?.platform === "spotify") {
-      this.spotifyController.stop();
-    }
-    this.currentSourceIsSpotify = false;
-    this.player.stop();
-    this.jellyfinReporter?.onStop();
-    this.autoPaused = false;
-    this.queue.clear();
-    this.sweepLocalAudio("stopped");
-    this.disableFmMode();
-    this.profileManager.onSongChange(null).catch((err) => {
-      this.logger.warn({ err }, "Profile restore failed on stop");
-    });
-    this.emit("stateChange");
-    return "Stopped and queue cleared";
-  }
-
-  private async cmdNext(): Promise<string> {
-    await this.playNext();
-    const current = this.queue.current();
-    if (current)
-      return `Now playing: ${current.name} - ${current.artist}`;
-    return "Queue is empty";
-  }
-
-  private async cmdPrev(): Promise<string> {
-    // Retry-skip up to 4 attempts: history can include failed songs
-    // that playNext's auto-advance retry-skipped past, so a single
-    // prev would otherwise land on an unplayable song and leave the
-    // queue's currentIndex stuck mid-failure.
-    for (let i = 0; i < 4; i++) {
-      const prev = this.queue.prev();
-      if (!prev) return "No previous song";
-      const ok = await this.resolveAndPlay(prev);
-      if (ok) return `Now playing: ${prev.name} - ${prev.artist}`;
-    }
-    return "Cannot play any previous songs (all failed to resolve)";
-  }
-
-  private cmdVol(cmd: ParsedCommand): string {
-    const vol = parseInt(cmd.args, 10);
-    if (isNaN(vol) || vol < 0 || vol > 100) return "Usage: !vol <0-100>";
-    this.player.setVolume(vol);
-    // Persist so the volume survives a restart (#125). Both the chat !vol command
-    // and the WebUI/REST volume endpoint funnel through here, so one write covers
-    // every entry point. Only volume is written — play mode is saved independently.
-    this.persistVolume();
-    this.emit("stateChange");
-    return `Volume set to ${vol}%`;
-  }
-
   /** Persist the current volume (#125). Best-effort: a DB error must never break
    *  the volume change itself. */
-  private persistVolume(): void {
+  persistVolume(): void {
     try {
       this.database.saveVolume(this.id, this.player.getVolume());
     } catch (err) {
@@ -1798,182 +1531,12 @@ export class BotInstance extends EventEmitter {
    *  Called ONLY from the explicit !mode command — NOT from FM/artist mode, whose
    *  Random/Loop switch is a transient side effect that must not overwrite the
    *  user's saved preference. */
-  private persistPlayMode(): void {
+  persistPlayMode(): void {
     try {
       this.database.savePlayMode(this.id, this.queue.getMode());
     } catch (err) {
       this.logger.warn({ err }, "Failed to persist play mode");
     }
-  }
-
-  private cmdNow(): string {
-    const song = this.queue.current();
-    if (!song) return "Nothing is playing";
-    return `Now playing: ${song.name} - ${song.artist} [${song.album}] (${song.platform})`;
-  }
-
-  private cmdQueue(): string {
-    const songs = this.queue.list();
-    if (songs.length === 0) return "Queue is empty";
-    const currentIdx = this.queue.getCurrentIndex();
-    const lines = songs.map((s, i) => {
-      const marker = i === currentIdx ? "▶ " : "  ";
-      return `${marker}${i + 1}. ${s.name} - ${s.artist}`;
-    });
-    return `Queue (${songs.length} songs, mode: ${this.queue.getMode()}):\n${lines.join("\n")}`;
-  }
-
-  private cmdClear(): string {
-    this.spotifyController.stop();
-    this.currentSourceIsSpotify = false;
-    this.player.stop();
-    this.jellyfinReporter?.onStop();
-    this.queue.clear();
-    this.sweepLocalAudio("queue_cleared");
-    this.disableFmMode();
-    this.profileManager.onSongChange(null).catch((err) => {
-      this.logger.warn({ err }, "Profile restore failed on clear");
-    });
-    this.emit("stateChange");
-    return "Queue cleared";
-  }
-
-  private async cmdRemove(cmd: ParsedCommand): Promise<string> {
-    const index = parseInt(cmd.args, 10) - 1;
-    if (isNaN(index) || index < 0) return "Usage: !remove <number>";
-    // Capture BEFORE the splice whether we're removing the currently-playing
-    // Spotify track: queue.remove() decrements currentIndex, so getCurrentIndex()
-    // is only meaningful pre-remove.
-    const removingCurrentSpotify =
-      index === this.queue.getCurrentIndex() && this.currentSourceIsSpotify;
-    const removed = this.queue.remove(index);
-    if (!removed) return "Invalid position";
-    // Corner-case R3-2: removing the track the Spotify sidecar is decoding
-    // right now leaves it running while queue.current() is no longer that
-    // track. Since a spotify track has NO player self-EOF advance path, the
-    // controller "trackEnded" handler would return early (current is no longer
-    // spotify) and the bot would wedge in silence. Reconcile like cmdStop/skip:
-    // tear the sidecar down, then advance to whatever is now current — or stop
-    // cleanly if the queue is now empty (playNext's exhausted branch stops the
-    // player). Non-current or non-spotify removals are untouched (a URL current
-    // track self-heals via its own EOF).
-    if (removingCurrentSpotify) {
-      this.spotifyController.stop();
-      this.currentSourceIsSpotify = false;
-      this.player.stop();
-      await this.playNext();
-    }
-    // Sweep after the entry is gone — the file is deleted only if no other
-    // queue position (or bot) still references this upload.
-    this.sweepLocalAudio("removed_from_queue");
-    this.emit("stateChange");
-    return `Removed: ${removed.name}`;
-  }
-
-  private cmdMode(cmd: ParsedCommand): string {
-    const mode = PLAY_MODE_BY_VALUE[cmd.args];
-    if (mode === undefined) return "Usage: !mode <seq|loop|random|rloop>";
-    this.queue.setMode(mode);
-    // Persist so the play mode survives a restart (#125). The chat !mode command
-    // and the WebUI/REST mode endpoint both funnel through here.
-    this.persistPlayMode();
-    this.emit("stateChange");
-    return `Play mode set to: ${cmd.args}`;
-  }
-
-  private async cmdPlaylist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return "Usage: !playlist <playlist name or ID>";
-    const provider = this.getProvider(cmd.flags);
-
-    // Determine if input is a direct ID (numeric / Jellyfin GUID) or a name search
-    const id = this.extractId(cmd.args);
-    const isDirectId = this.looksLikeCollectionId(cmd.args);
-
-    let playlistId: string;
-
-    if (isDirectId || id !== cmd.args) {
-      // Input is a direct ID or URL containing an ID — use existing logic
-      playlistId = id;
-    } else {
-      // Name-based search
-      const result = await provider.search(cmd.args);
-      let playlists = result.playlists ?? [];
-
-      // Also search user's personal playlists if logged in
-      if (provider.getUserPlaylists) {
-        try {
-          const userPlaylists = await provider.getUserPlaylists();
-          const query = cmd.args.toLowerCase();
-          const matched = userPlaylists.filter(
-            p => p.name.toLowerCase().includes(query)
-          );
-          // Merge: public results first (API-ranked), then user matches
-          playlists = [...playlists, ...matched];
-        } catch {
-          // User playlists unavailable — continue with public results
-        }
-      }
-
-      if (playlists.length === 0)
-        return `No playlists found for: ${cmd.args}`;
-      playlistId = playlists[0].id;
-    }
-
-    const songs = await provider.getPlaylistSongs(playlistId);
-    if (songs.length === 0) return "Playlist is empty or not found";
-
-    this.player.stop();
-    this.queue.clear();
-    this.disableFmMode();
-    for (const song of songs) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
-    }
-    const first = this.queue.play();
-    if (first) await this.resolveAndPlay(first);
-    this.sweepLocalAudio("queue_replaced");
-    this.emit("stateChange");
-    return `Loaded ${songs.length} songs. Now playing: ${first?.name ?? "unknown"}`;
-  }
-
-  private async cmdAlbum(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return "Usage: !album <album name or ID>";
-    const provider = this.getProvider(cmd.flags);
-
-    const id = this.extractId(cmd.args);
-    const isDirectId = this.looksLikeCollectionId(cmd.args);
-
-    let albumId: string;
-
-    if (isDirectId || id !== cmd.args) {
-      // Input is a direct ID (numeric / Jellyfin GUID) or URL containing an ID — use directly
-      albumId = id;
-    } else {
-      // Name-based search
-      const result = await provider.search(cmd.args);
-      const albums = result.albums ?? [];
-      if (albums.length === 0)
-        return `No albums found for: ${cmd.args}`;
-      albumId = albums[0].id;
-    }
-
-    const songs = await provider.getAlbumSongs(albumId);
-    if (songs.length === 0) return "Album is empty or not found";
-
-    this.player.stop();
-    this.queue.clear();
-    this.disableFmMode();
-    for (const song of songs) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
-    }
-    const first = this.queue.play();
-    if (first) await this.resolveAndPlay(first);
-    this.sweepLocalAudio("queue_replaced");
-    this.emit("stateChange");
-    return `Loaded ${songs.length} songs. Now playing: ${first?.name ?? "unknown"}`;
-  }
-
-  private async cmdFm(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    return this.startFm(this.getProvider(cmd.flags), requesterName);
   }
 
   async startFm(provider: MusicProvider = this.neteaseProvider, requesterName?: string): Promise<string> {
@@ -2009,40 +1572,7 @@ export class BotInstance extends EventEmitter {
     return `${label} started: ${first?.name ?? "unknown"} - ${first?.artist ?? ""}`;
   }
 
-  private async cmdArtist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
-    if (!cmd.args) return "Usage: !artist <artist name>";
-    const provider = this.getProvider(cmd.flags);
-    const result = await provider.search(cmd.args, 50);
-    if (result.songs.length === 0)
-      return `No results found for artist: ${cmd.args}`;
-
-    const query = cmd.args.toLowerCase();
-    let filtered = result.songs.filter(
-      s => s.artist.toLowerCase().includes(query)
-    );
-
-    // Fallback to unfiltered results if filtering drops everything
-    if (filtered.length === 0) {
-      filtered = result.songs.slice(0, 20);
-    }
-
-    this.player.stop();
-    this.queue.clear();
-    this.disableFmMode();
-    for (const song of filtered) {
-      this.queue.add(this.withRequester({ ...song, platform: provider.platform }, requesterName));
-    }
-    this.queue.setMode(PlayMode.Loop);
-    this.player.resetFailures();
-
-    const first = this.queue.play();
-    if (first) await this.resolveAndPlay(first);
-    this.sweepLocalAudio("queue_replaced");
-    this.emit("stateChange");
-    return `Artist mode: ${cmd.args} — ${filtered.length} songs loaded. Now playing: ${first?.name ?? "unknown"}`;
-  }
-
-  private async refillFm(): Promise<void> {
+  async refillFm(): Promise<void> {
     const provider = this.fmProvider;
     if (!this.isFmMode || !provider?.getPersonalFm) return;
     try {
@@ -2055,112 +1585,6 @@ export class BotInstance extends EventEmitter {
     } catch (err) {
       this.logger.error({ err }, "Failed to refill FM queue");
     }
-  }
-
-  private async cmdVote(msg?: TS3TextMessage): Promise<string> {
-    if (!msg) return "Vote can only be used in TeamSpeak";
-    this.voteSkipUsers.add(msg.invokerUid);
-    const clients = await this.tsClient.getClientsInChannel();
-    const totalUsers = clients.length - 1; // exclude the bot itself
-    // At least 1 vote is always required — otherwise a single voter in an
-    // otherwise empty channel (or a transient clients.length=1 race) could
-    // unanimously "win" with needed=0.
-    const needed = Math.max(1, Math.ceil(totalUsers / 2));
-    const votes = this.voteSkipUsers.size;
-
-    if (votes >= needed) {
-      this.voteSkipUsers.clear();
-      this.playNext().catch((err) => {
-        this.logger.error({ err }, "playNext failed after vote skip");
-      });
-      return `Vote passed (${votes}/${needed}). Skipping to next song.`;
-    }
-    return `Vote to skip: ${votes}/${needed} (need ${needed - votes} more)`;
-  }
-
-  private async cmdLyrics(): Promise<string> {
-    const song = this.queue.current();
-    if (!song) return "Nothing is playing";
-    const provider = this.getProviderFor(song.platform);
-    const lyrics = await provider.getLyrics(song.id);
-    if (lyrics.length === 0) return "No lyrics available";
-    // Include the FULL lyrics (the send path chunks them under the message
-    // cap). Cap only to avoid pathological spam — far above any normal song.
-    const MAX_LYRIC_LINES = 200;
-    const lines = lyrics.slice(0, MAX_LYRIC_LINES).map((l) => l.text);
-    return `Lyrics for ${song.name}:\n${lines.join("\n")}`;
-  }
-
-  private async cmdMove(cmd: ParsedCommand): Promise<string> {
-    if (!cmd.args) return "Usage: !move <channel name or ID>";
-    await this.tsClient.joinChannel(cmd.args);
-    return `Moved to channel: ${cmd.args}`;
-  }
-
-  private async cmdHome(): Promise<string> {
-    if (this.tsClient.isInDefaultChannel()) {
-      return "机器人当前已在默认频道";
-    }
-    const ok = await this.returnToDefaultChannel();
-    if (ok) {
-      const target = this.tsClient.getDefaultChannelIdentifier() || "默认频道";
-      return `已返回默认频道: ${target}`;
-    }
-    return "未配置默认频道或返回失败";
-  }
-
-  private async cmdFollow(msg?: TS3TextMessage): Promise<string> {
-    if (!msg) return "Follow can only be used in TeamSpeak";
-    return "Following you to your channel";
-  }
-
-  // ─── Saved queues (chat side, #119) ──────────────────────────────────────
-  // TeamSpeak users have no WebUI account, so chat save/load always uses the
-  // reserved SHARED_QUEUE_OWNER bucket. All three commands are inert (reply
-  // "此功能未启用") unless the admin enabled savedQueuesEnabled.
-
-  private savedQueuesGuard(): string | null {
-    return this.config.savedQueuesEnabled ? null : "此功能未启用";
-  }
-
-  private cmdSaveQueue(cmd: ParsedCommand): string {
-    const off = this.savedQueuesGuard();
-    if (off) return off;
-    const name = cmd.args.trim();
-    if (!name) return `Usage: ${this.config.commandPrefix}save <名称>`;
-    const songs = this.queue.list();
-    if (songs.length === 0) return "队列为空，无法保存";
-    try {
-      const saved = this.database.saveQueue(SHARED_QUEUE_OWNER, name, songs);
-      return `已保存队列「${name}」（${saved.songCount} 首）`;
-    } catch (err) {
-      return `保存失败：${(err as Error).message}`;
-    }
-  }
-
-  private async cmdLoadQueue(cmd: ParsedCommand): Promise<string> {
-    const off = this.savedQueuesGuard();
-    if (off) return off;
-    const name = cmd.args.trim();
-    if (!name) return `Usage: ${this.config.commandPrefix}load [-a] <名称>`;
-    const meta = this.database
-      .listSavedQueues(SHARED_QUEUE_OWNER, false)
-      .find((q) => q.name === name);
-    const full = meta ? this.database.getSavedQueue(meta.id) : null;
-    if (!full) return `找不到已保存队列「${name}」`;
-    const mode = cmd.flags.has("a") ? "append" : "replace";
-    await this.loadSavedQueue(full.songs, mode);
-    return mode === "append"
-      ? `已追加「${name}」（${full.songs.length} 首）到队列`
-      : `已加载「${name}」（${full.songs.length} 首）`;
-  }
-
-  private cmdListQueues(): string {
-    const off = this.savedQueuesGuard();
-    if (off) return off;
-    const list = this.database.listSavedQueues(SHARED_QUEUE_OWNER, false);
-    if (list.length === 0) return "还没有已保存的队列";
-    return ["已保存队列：", ...list.map((q) => `• ${q.name}（${q.songCount} 首）`)].join("\n");
   }
 
   // ─── Live-queue persistence (Feature 2, #119) ────────────────────────────
@@ -2231,54 +1655,84 @@ export class BotInstance extends EventEmitter {
     );
   }
 
-  private cmdHelp(): string {
-    const p = this.config.commandPrefix;
-    const def = defaultPlatform(this.config);
-    // Only advertise source flags whose provider is actually enabled.
-    const flagHelp = BotInstance.FLAG_PLATFORMS.filter(([, platform]) =>
-      isProviderEnabled(this.config, platform),
-    )
-      .map(([flag, platform]) => `-${flag}=${platform}`)
-      .join(" ");
-    return [
-      "TSMusicBot Commands:",
-      `${p}play <song>  — Search and play (default source: ${def})`,
-      ...(flagHelp ? [`  Source flags: ${flagHelp}`] : []),
-      `${p}search <name> — List top matches to pick a specific (same-name) song`,
-      `${p}play #N       — Play the Nth result of the last ${p}search`,
-      `${p}play id <id> — Play an exact song by id / URL`,
-      `${p}add <song>   — Add to queue (also accepts #N / id <id> / URL)`,
-      `${p}playnext <song> — Insert as next song (alias: ${p}pn)`,
-      `${p}pause/resume — Pause/resume`,
-      `${p}next/prev    — Next/previous`,
-      `${p}stop         — Stop and clear queue`,
-      `${p}vol <0-100>  — Set volume`,
-      `${p}queue        — Show queue`,
-      `${p}remove <pos> — Remove song at position (see ${p}queue)`,
-      `${p}mode <seq|loop|random|rloop> — Play mode`,
-      `${p}playlist <name or id> — Load playlist by name or ID`,
-      `${p}album <name or id> — Load album`,
-      `${p}fm           — Personal FM (default source: ${def}; source flags work too)`,
-      `${p}artist <name> — Play songs by artist (loop)`,
-      ...(this.config.savedQueuesEnabled
-        ? [
-            `${p}save <名称>  — Save current queue`,
-            `${p}load [-a] <名称> — Load a saved queue (-a appends)`,
-            `${p}queues       — List saved queues`,
-          ]
-        : []),
-      `${p}vote         — Vote to skip`,
-      `${p}lyrics       — Show lyrics`,
-      `${p}move <ch>    — Move bot to channel`,
-      `${p}home         — Return bot to default channel (alias: ${p}default)`,
-      `${p}now          — Current song info`,
-      `${p}help         — This help message`,
-    ].join("\n");
+  cmdPause(): string {
+    return getOrCreateHandler(this).cmdPause();
+  }
+  cmdResume(): string {
+    return getOrCreateHandler(this).cmdResume();
+  }
+  cmdStop(): string {
+    return getOrCreateHandler(this).cmdStop();
+  }
+  cmdNext(): Promise<string> {
+    return getOrCreateHandler(this).cmdNext();
+  }
+  cmdPrev(): Promise<string> {
+    return getOrCreateHandler(this).cmdPrev();
+  }
+  cmdVol(cmd: ParsedCommand): string {
+    return getOrCreateHandler(this).cmdVol(cmd);
+  }
+  cmdNow(): string {
+    return getOrCreateHandler(this).cmdNow();
+  }
+  cmdQueue(): string {
+    return getOrCreateHandler(this).cmdQueue();
+  }
+  cmdClear(): string {
+    return getOrCreateHandler(this).cmdClear();
+  }
+  cmdRemove(cmd: ParsedCommand): Promise<string> {
+    return getOrCreateHandler(this).cmdRemove(cmd);
+  }
+  cmdMode(cmd: ParsedCommand): string {
+    return getOrCreateHandler(this).cmdMode(cmd);
+  }
+  cmdPlaylist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+    return getOrCreateHandler(this).cmdPlaylist(cmd, requesterName);
+  }
+  cmdAlbum(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+    return getOrCreateHandler(this).cmdAlbum(cmd, requesterName);
+  }
+  cmdFm(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+    return getOrCreateHandler(this).cmdFm(cmd, requesterName);
+  }
+  cmdArtist(cmd: ParsedCommand, requesterName?: string): Promise<string> {
+    return getOrCreateHandler(this).cmdArtist(cmd, requesterName);
+  }
+  cmdVote(msg?: TS3TextMessage): Promise<string> {
+    return getOrCreateHandler(this).cmdVote(msg);
+  }
+  cmdLyrics(): Promise<string> {
+    return getOrCreateHandler(this).cmdLyrics();
+  }
+  cmdMove(cmd: ParsedCommand): Promise<string> {
+    return getOrCreateHandler(this).cmdMove(cmd);
+  }
+  cmdHome(): Promise<string> {
+    return getOrCreateHandler(this).cmdHome();
+  }
+  cmdFollow(msg?: TS3TextMessage): Promise<string> {
+    return getOrCreateHandler(this).cmdFollow(msg);
+  }
+  savedQueuesGuard(): string | null {
+    return getOrCreateHandler(this).savedQueuesGuard();
+  }
+  cmdSaveQueue(cmd: ParsedCommand): string {
+    return getOrCreateHandler(this).cmdSaveQueue(cmd);
+  }
+  cmdLoadQueue(cmd: ParsedCommand): Promise<string> {
+    return getOrCreateHandler(this).cmdLoadQueue(cmd);
+  }
+  cmdListQueues(): string {
+    return getOrCreateHandler(this).cmdListQueues();
+  }
+  cmdHelp(): string {
+    return getOrCreateHandler(this).cmdHelp();
   }
 
   /**
    * Advance the queue and play the next song. If the resolved URL fails
-   * (e.g., copyright/region restrictions for QQ), skips up to `maxRetries`
    * more songs looking for a playable one. Public so REST endpoints that
    * seed the queue can fall back to this retry-skip behavior.
    *
@@ -2348,7 +1802,7 @@ export class BotInstance extends EventEmitter {
     }
   }
 
-  private extractId(input: string): string {
+  extractId(input: string): string {
     const trimmed = input.trim();
     if (/^https?:\/\//i.test(trimmed)) {
       const match = trimmed.match(/[?&]id=(\d+)/);
@@ -2364,7 +1818,7 @@ export class BotInstance extends EventEmitter {
 
   /** Direct collection ids: numeric (NetEase/QQ) or Jellyfin GUID ItemIds
    *  (32 hex chars, optionally dashed) — never treat those as name searches. */
-  private looksLikeCollectionId(raw: string): boolean {
+  looksLikeCollectionId(raw: string): boolean {
     const t = raw.trim();
     return (
       /^\d+$/.test(t) ||

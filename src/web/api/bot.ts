@@ -118,7 +118,8 @@ export function createBotRouter(
 
   // GET /api/bot/settings — 读取全局 bot 行为设置
   // NOTE: must be registered before "/:id" so it isn't shadowed by the param route.
-  router.get("/settings", requireNotGuest, (_req, res) => {
+  router.get("/settings", requireNotGuest, (req, res) => {
+    const isAdmin = req.user?.role === "admin";
     res.json({
       idleTimeoutMinutes: config.idleTimeoutMinutes ?? 0,
       autoPauseOnEmpty: config.autoPauseOnEmpty,
@@ -129,7 +130,7 @@ export function createBotRouter(
       loudnessNormalization: config.loudnessNormalization,
       audioFade: config.audioFade,
       autoSourceFallback: config.autoSourceFallback,
-      adminGroups: config.adminGroups ?? [],
+      adminGroups: isAdmin ? (config.adminGroups ?? []) : [],
       guestMode: config.guestMode,
       spotify: maskedSpotify(),
       jellyfin: maskedJellyfin(),

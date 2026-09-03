@@ -41,6 +41,11 @@ export function setupWebSocket(
 
   wss.on("connection", (ws) => {
     clients.add(ws);
+    const socket = ws as WebSocket & { isAlive?: boolean };
+    socket.isAlive = true;
+    ws.on("pong", () => {
+      socket.isAlive = true;
+    });
     logger.debug("WebSocket client connected");
 
     const bots = botManager
@@ -66,6 +71,26 @@ export function setupWebSocket(
       clients.delete(ws);
     });
   });
+
+  const heartbeatInterval = setInterval(() => {
+    for (const ws of clients) {
+      const socket = ws as WebSocket & { isAlive?: boolean };
+      if (socket.isAlive === false) {
+        clients.delete(ws);
+        try { ws.terminate(); } catch {}
+        continue;
+      }
+      socket.isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        clients.delete(ws);
+      }
+    }
+  }, 30_000);
+  if (typeof (heartbeatInterval as any).unref === "function") {
+    (heartbeatInterval as any).unref();
+  }
 
   const MAX_WS_BUFFERED_AMOUNT = 1024 * 1024; // 1 MB backpressure limit
 
@@ -169,6 +194,7 @@ export function setupWebSocket(
   ensureAllBotsAttached();
 
   const cleanup = () => {
+    clearInterval(heartbeatInterval);
     botManager.removeListener("botInstance", onBotInstance);
     botManager.removeListener("botInstanceRemoved", onBotInstanceRemoved);
     // Clean up all attached listeners (detach from stored bot refs, not live map)

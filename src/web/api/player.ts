@@ -8,6 +8,7 @@ import type { BotInstance } from "../../bot/instance.js";
 import { parseCommand } from "../../bot/commands.js";
 import { requireBotAccess } from "../middleware/requirePermission.js";
 import { authorize } from "../middleware/authorize.js";
+import { requireNotGuest } from "../middleware/requireNotGuest.js";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -106,6 +107,29 @@ export function createPlayerRouter(
     return typeof name === "string" && name.trim() ? name.trim() : "游客";
   }
 
+  function executeWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs = 25000,
+    errorMsg = "Operation timed out",
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(errorMsg));
+      }, timeoutMs);
+      timer.unref?.();
+      promise.then(
+        (res) => {
+          clearTimeout(timer);
+          resolve(res);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
   router.post("/:botId/play", authorize({ capability: "player.control" }), async (req, res) => {
     try {
       const bot = requestBot(req);
@@ -120,7 +144,7 @@ export function createPlayerRouter(
         res.status(400).json({ error: "Invalid command" });
         return;
       }
-      const response = await bot.executeCommand(cmd, undefined, requesterName(req));
+      const response = await executeWithTimeout(bot.executeCommand(cmd, undefined, requesterName(req)));
       res.json({ message: response });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -141,7 +165,7 @@ export function createPlayerRouter(
         res.status(400).json({ error: "Invalid command" });
         return;
       }
-      const response = await bot.executeCommand(cmd, undefined, requesterName(req));
+      const response = await executeWithTimeout(bot.executeCommand(cmd, undefined, requesterName(req)));
       res.json({ message: response });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -152,7 +176,7 @@ export function createPlayerRouter(
     try {
       const bot = requestBot(req);
       const cmd = parseCommand(cmdStr, "!")!;
-      const response = await bot.executeCommand(cmd);
+      const response = await executeWithTimeout(bot.executeCommand(cmd));
       res.json({ message: response });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -177,7 +201,7 @@ export function createPlayerRouter(
         return;
       }
       const provider = bot.getProviderFor(selectedPlatform);
-      const message = await bot.startFm(provider, requesterName(req));
+      const message = await executeWithTimeout(bot.startFm(provider, requesterName(req)));
       res.json({
         ok:
           !message.startsWith("No FM songs") &&
@@ -737,8 +761,8 @@ export function createPlayerRouter(
 
   // --- Profile config endpoints ---
 
-  router.get("/:botId/profile", (req, res) => {
-      const bot = requestBot(req);
+  router.get("/:botId/profile", requireNotGuest, (req, res) => {
+    const bot = requestBot(req);
     res.json(bot.getProfileManager().getConfig());
   });
 

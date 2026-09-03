@@ -136,8 +136,16 @@ export class YouTubeProvider implements MusicProvider {
           return entryToSong(entry);
         });
       return { songs, playlists: [], albums: [] };
-    } catch {
-      return { songs: [], playlists: [], albums: [] };
+    } catch (err) {
+      return {
+        songs: [],
+        playlists: [],
+        albums: [],
+        error: {
+          code: (err as any)?.code || "YT_SEARCH_FAILED",
+          message: (err as Error)?.message || "YouTube search failed",
+        },
+      };
     }
   }
 

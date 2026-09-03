@@ -64,4 +64,19 @@ export class LRUCache<K, V> {
   get size(): number {
     return this.map.size;
   }
+
+  /**
+   * Prune expired entries proactively and return the count of pruned items.
+   */
+  pruneExpired(): number {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [key, entry] of this.map) {
+      if (entry.expiresAt > 0 && now > entry.expiresAt) {
+        this.map.delete(key);
+        pruned++;
+      }
+    }
+    return pruned;
+  }
 }

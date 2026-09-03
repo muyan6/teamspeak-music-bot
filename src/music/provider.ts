@@ -65,10 +65,16 @@ export interface LyricLine {
   translation?: string;
 }
 
+export interface SourceError {
+  code?: string;
+  message: string;
+}
+
 export interface SearchResult {
   songs: Song[];
   playlists: Playlist[];
   albums: Album[];
+  error?: SourceError;
 }
 
 export interface QrCodeResult {

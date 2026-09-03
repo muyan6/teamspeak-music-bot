@@ -179,13 +179,12 @@ export class BotManager extends EventEmitter {
 
   async createBot(params: CreateBotParams): Promise<BotInstance> {
     const id = crypto.randomUUID();
-    const spotifyPorts = this.allocateSpotifyPorts(id);
     const { host: serverAddress, port: serverPort } = normalizeServerAddress(
       params.serverAddress,
       params.serverPort ?? 9987
     );
 
-    this.database.saveBotInstance({
+    const savedRecord = {
       id,
       name: params.name,
       serverAddress,
@@ -199,43 +198,10 @@ export class BotManager extends EventEmitter {
       serverProtocol: params.serverProtocol ?? "",
       ts6ApiKey: params.ts6ApiKey ?? "",
       serverPassword: params.serverPassword ?? "",
-    });
+    };
+    this.database.saveBotInstance(savedRecord);
 
-    const bot = new BotInstance({
-      id,
-      name: params.name,
-      tsOptions: {
-        host: serverAddress,
-        port: serverPort,
-        queryPort: params.queryPort ?? 10011,
-        nickname: params.nickname,
-        defaultChannel: params.defaultChannel,
-        channelId: params.channelId,
-        channelPassword: params.channelPassword,
-        serverPassword: params.serverPassword,
-        serverProtocol: params.serverProtocol === "ts3" || params.serverProtocol === "ts6"
-          ? params.serverProtocol
-          : undefined,
-        ts6ApiKey: params.ts6ApiKey,
-      },
-      neteaseProvider: this.neteaseProvider,
-      qqProvider: this.qqProvider,
-      bilibiliProvider: this.bilibiliProvider,
-      youtubeProvider: this.youtubeProvider,
-      localProvider: this.localProvider,
-      kugouProvider: this.kugouProvider,
-      spotifyProvider: this.spotifyProvider,
-      jellyfinProvider: this.jellyfinProvider,
-      database: this.database,
-      config: this.config,
-      logger: this.logger,
-      avatarStore: this.avatarStore,
-      managedVoiceClients: this.managedVoiceClients,
-      spotifyDataDir: this.spotifyDataDir,
-      spotifyOAuth: this.spotifyOAuth,
-      spotifyPorts,
-    });
-
+    const bot = this.buildBotInstance(savedRecord);
     this.bots.set(id, bot);
     this.emit("botInstance", bot);
 
@@ -340,47 +306,7 @@ export class BotManager extends EventEmitter {
     // Reload config from database so updated settings (channel, nickname, etc.) take effect
     const saved = this.database.getBotInstances().find((i) => i.id === id);
     if (saved) {
-      const proto = saved.serverProtocol as "ts3" | "ts6" | "" | undefined;
-      const { host: serverAddress, port: serverPort } = normalizeServerAddress(
-        saved.serverAddress,
-        saved.serverPort ?? 9987
-      );
-      const bot = new BotInstance({
-        id: saved.id,
-        name: saved.name,
-        tsOptions: {
-          host: serverAddress,
-          port: serverPort,
-          queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
-          nickname: saved.nickname,
-          // Reuse the stored identity so server groups assigned to this bot
-          // survive restarts — without this the TS server sees a new UID
-          // each connect and strips all previously granted groups.
-          identity: saved.identity || undefined,
-          defaultChannel: saved.defaultChannel || undefined,
-          channelId: saved.channelId || undefined,
-          channelPassword: saved.channelPassword || undefined,
-          serverPassword: saved.serverPassword || undefined,
-          serverProtocol: proto === "ts3" || proto === "ts6" ? proto : undefined,
-          ts6ApiKey: saved.ts6ApiKey || undefined,
-        },
-        neteaseProvider: this.neteaseProvider,
-        qqProvider: this.qqProvider,
-        bilibiliProvider: this.bilibiliProvider,
-        youtubeProvider: this.youtubeProvider,
-        localProvider: this.localProvider,
-        kugouProvider: this.kugouProvider,
-        spotifyProvider: this.spotifyProvider,
-        jellyfinProvider: this.jellyfinProvider,
-        database: this.database,
-        config: this.config,
-        logger: this.logger,
-        avatarStore: this.avatarStore,
-        managedVoiceClients: this.managedVoiceClients,
-        spotifyDataDir: this.spotifyDataDir,
-        spotifyOAuth: this.spotifyOAuth,
-        spotifyPorts: this.allocateSpotifyPorts(id),
-      });
+      const bot = this.buildBotInstance(saved);
       this.bots.set(id, bot);
       this.emit("botInstance", bot);
       await connectWithTimeout(bot, 25_000, this.logger);
@@ -444,45 +370,7 @@ export class BotManager extends EventEmitter {
   async loadSavedBots(): Promise<void> {
     const savedInstances = this.database.getBotInstances();
     for (const saved of savedInstances) {
-      const proto = saved.serverProtocol as "ts3" | "ts6" | "" | undefined;
-      const { host: serverAddress, port: serverPort } = normalizeServerAddress(
-        saved.serverAddress,
-        saved.serverPort ?? 9987
-      );
-      const bot = new BotInstance({
-        id: saved.id,
-        name: saved.name,
-        tsOptions: {
-          host: serverAddress,
-          port: serverPort,
-          queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
-          nickname: saved.nickname,
-          identity: saved.identity || undefined,
-          defaultChannel: saved.defaultChannel || undefined,
-          channelId: saved.channelId || undefined,
-          channelPassword: saved.channelPassword || undefined,
-          serverPassword: saved.serverPassword || undefined,
-          serverProtocol: proto === "ts3" || proto === "ts6" ? proto : undefined,
-          ts6ApiKey: saved.ts6ApiKey || undefined,
-        },
-        neteaseProvider: this.neteaseProvider,
-        qqProvider: this.qqProvider,
-        bilibiliProvider: this.bilibiliProvider,
-        youtubeProvider: this.youtubeProvider,
-        localProvider: this.localProvider,
-        kugouProvider: this.kugouProvider,
-        spotifyProvider: this.spotifyProvider,
-        jellyfinProvider: this.jellyfinProvider,
-        database: this.database,
-        config: this.config,
-        logger: this.logger,
-        avatarStore: this.avatarStore,
-        managedVoiceClients: this.managedVoiceClients,
-        spotifyDataDir: this.spotifyDataDir,
-        spotifyOAuth: this.spotifyOAuth,
-        spotifyPorts: this.allocateSpotifyPorts(saved.id),
-      });
-
+      const bot = this.buildBotInstance(saved);
       this.bots.set(saved.id, bot);
       this.emit("botInstance", bot);
 
@@ -564,5 +452,46 @@ export class BotManager extends EventEmitter {
     }
     this.bots.clear();
     this.spotifyPortAllocations.clear();
+  }
+
+  private buildBotInstance(saved: import("../data/database.js").BotInstance): BotInstance {
+    const proto = saved.serverProtocol as "ts3" | "ts6" | "" | undefined;
+    const { host: serverAddress, port: serverPort } = normalizeServerAddress(
+      saved.serverAddress,
+      saved.serverPort ?? 9987
+    );
+    return new BotInstance({
+      id: saved.id,
+      name: saved.name,
+      tsOptions: {
+        host: serverAddress,
+        port: serverPort,
+        queryPort: saved.queryPort ?? (proto === "ts6" ? 10080 : 10011),
+        nickname: saved.nickname,
+        identity: saved.identity || undefined,
+        defaultChannel: saved.defaultChannel || undefined,
+        channelId: saved.channelId || undefined,
+        channelPassword: saved.channelPassword || undefined,
+        serverPassword: saved.serverPassword || undefined,
+        serverProtocol: proto === "ts3" || proto === "ts6" ? proto : undefined,
+        ts6ApiKey: saved.ts6ApiKey || undefined,
+      },
+      neteaseProvider: this.neteaseProvider,
+      qqProvider: this.qqProvider,
+      bilibiliProvider: this.bilibiliProvider,
+      youtubeProvider: this.youtubeProvider,
+      localProvider: this.localProvider,
+      kugouProvider: this.kugouProvider,
+      spotifyProvider: this.spotifyProvider,
+      jellyfinProvider: this.jellyfinProvider,
+      database: this.database,
+      config: this.config,
+      logger: this.logger,
+      avatarStore: this.avatarStore,
+      managedVoiceClients: this.managedVoiceClients,
+      spotifyDataDir: this.spotifyDataDir,
+      spotifyOAuth: this.spotifyOAuth,
+      spotifyPorts: this.allocateSpotifyPorts(saved.id),
+    });
   }
 }

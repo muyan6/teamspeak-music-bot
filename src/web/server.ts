@@ -123,10 +123,14 @@ export function createWebServer(options: WebServerOptions): WebServer {
   app.use("/api", csrfOriginCheck);
 
   // Anti-DoS: throttle auth endpoints.
-  // 5 req per minute per IP for /login (capacity 5, refill 5/60 = ~0.083/sec).
+  // 5 req per minute per (IP + username) for /login to avoid subnet-wide lockouts.
   // 3 req per minute per IP for /setup (more limited; first-run is rare).
   // 10 req per minute per IP for /guest.
-  const loginLimit = createRateLimit({ capacity: 5, refillPerSec: 5 / 60 });
+  const loginLimit = createRateLimit({
+    capacity: 5,
+    refillPerSec: 5 / 60,
+    keyFn: (req) => `${req.ip}:${String(req.body?.username ?? "").trim().toLowerCase()}`,
+  });
   const setupLimit = createRateLimit({ capacity: 3, refillPerSec: 3 / 60 });
   const guestLimit = createRateLimit({ capacity: 10, refillPerSec: 10 / 60 });
   app.use("/api/session/login", loginLimit);

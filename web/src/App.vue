@@ -113,7 +113,7 @@ const canModeCtl = computed(() => can('player.control') || guestCan('playMode'))
 const theme = computed(() => playerStore.theme);
 const route = useRoute();
 const router = useRouter();
-const { connect } = useWebSocket();
+const { connect, connected: wsConnected } = useWebSocket();
 const currentSong = computed(() => playerStore.currentSong);
 // Volume slider decoupled from the 60fps updateMobileProgress() rAF re-render
 // so it isn't reset mid-drag (#111 — same root cause as the desktop player).
@@ -339,7 +339,11 @@ onMounted(async () => {
   // Non-critical: reads savedQueuesEnabled so the nav entry can show/hide.
   // Guests get a 403 (swallowed) → the entry stays hidden for them.
   if (!session.isGuest.value) playerStore.fetchBotSettings();
-  syncTimer = setInterval(() => playerStore.syncElapsed(), 3000);
+  syncTimer = setInterval(() => {
+    if (!wsConnected.value) {
+      playerStore.syncElapsed();
+    }
+  }, 5000);
   mobileRaf = requestAnimationFrame(updateMobileProgress);
   // Reconcile the dedicated-link scope only after the bot list is known: the
   // router guard sets scopedBotId tentatively from ?bot, but applyScopeFromQuery

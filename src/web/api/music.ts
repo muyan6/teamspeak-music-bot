@@ -251,6 +251,12 @@ export function createMusicRouter(
         return;
       }
       const parsedLimit = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
+      const cacheKey = `all:${String(q).trim().toLowerCase()}:${parsedLimit}`;
+      const cached = searchCache.get(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
       // Spotify is intentionally EXCLUDED from unified /search/all in Stage 1:
       // its tracks are metadata-only (not yet playable) until the librespot audio
       // backend lands (Stage 2/3), so surfacing them in the default all-sources
@@ -289,7 +295,29 @@ export function createMusicRouter(
         ...(qqResult.status === "fulfilled" ? qqResult.value.playlists : []),
       ];
 
-      res.json({ songs, albums, playlists });
+      const errors: Record<string, string> = {};
+      const checkError = (plat: string, res: PromiseSettledResult<SearchResult>) => {
+        if (res.status === "rejected") {
+          errors[plat] = (res.reason as Error)?.message || `${plat} search failed`;
+        } else if (res.value?.error) {
+          errors[plat] = res.value.error.message;
+        }
+      };
+      checkError("jellyfin", jellyfinResult);
+      checkError("netease", neteaseResult);
+      checkError("qq", qqResult);
+      checkError("bilibili", bilibiliResult);
+      checkError("local", localResult);
+      checkError("kugou", kugouResult);
+
+      const result: SearchResult & { errors?: Record<string, string> } = {
+        songs,
+        albums,
+        playlists,
+        ...(Object.keys(errors).length > 0 ? { errors } : {}),
+      };
+      searchCache.set(cacheKey, result);
+      res.json(result);
     } catch (err) {
       logger.error({ err }, "Unified search failed");
       res.status(500).json({ error: (err as Error).message });
