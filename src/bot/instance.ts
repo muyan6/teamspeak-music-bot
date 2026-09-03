@@ -1231,22 +1231,19 @@ export class BotInstance extends EventEmitter {
   }
 
   private preFetchNextTrack(): void {
-    const list = this.queue.list();
-    const candidates = list.slice(0, 2);
-    for (const nextSong of candidates) {
-      if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") continue;
+    const nextSong = this.queue.peekNext();
+    if (!nextSong || nextSong.platform === "spotify" || nextSong.platform === "local") return;
 
-      const cacheKey = `${nextSong.platform}:${nextSong.id}`;
-      if (this.urlCache.has(cacheKey)) continue;
+    const cacheKey = `${nextSong.platform}:${nextSong.id}`;
+    if (this.urlCache.has(cacheKey)) return;
 
-      const provider = this.getProviderFor(nextSong.platform);
-      provider.getSongUrl(nextSong.id).then((res) => {
-        if (res?.url) {
-          this.urlCache.set(cacheKey, res);
-          this.logger.debug({ songId: nextSong.id }, "Pre-resolved next track URL");
-        }
-      }).catch(() => {});
-    }
+    const provider = this.getProviderFor(nextSong.platform);
+    provider.getSongUrl(nextSong.id).then((res) => {
+      if (res?.url) {
+        this.urlCache.set(cacheKey, res);
+        this.logger.debug({ songId: nextSong.id }, "Pre-resolved next track URL");
+      }
+    }).catch(() => {});
   }
 
   /** Resolve URL for a song and start playing it. Skips to next if URL fails. */

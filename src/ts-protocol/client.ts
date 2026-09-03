@@ -237,19 +237,6 @@ export class TS3Client extends EventEmitter {
       });
     }
 
-    // Guard against calling connect() while already connected.
-    // Save detectedProtocol first because disconnect() resets it.
-    if (this.client) {
-      this.logger.warn("connect() called while already connected, disconnecting first");
-      const savedProtocol = this.detectedProtocol;
-      const savedHttpQuery = this.httpQuery;
-      this.disconnect();
-      this.detectedProtocol = savedProtocol;
-      this.httpQuery = savedHttpQuery;
-      // Give the old client a moment to tear down
-      await new Promise((r) => setTimeout(r, 100));
-    }
-
     this.logger.info(
       { addr, protocol: this.detectedProtocol },
       "Connecting to TeamSpeak server (full client protocol)",
@@ -749,6 +736,28 @@ export class TS3Client extends EventEmitter {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Resolve a client's current channel ID.
+   * Checks the visible client cache first, then falls back to `clientinfo`.
+   */
+  async getClientChannelId(clid: number | string): Promise<bigint | null> {
+    if (!this.client) return null;
+    const numericId = typeof clid === "number" ? clid : parseInt(clid, 10);
+    if (!Number.isFinite(numericId) || numericId <= 0) return null;
+    const cached = this.visibleClients.get(numericId);
+    if (cached?.channelID !== undefined && cached.channelID > 0n) {
+      return cached.channelID;
+    }
+    try {
+      const info = await getClientInfo(this.client, numericId);
+      const rawCid = info?.cid ?? (info as any)?.client_channel_id;
+      if (rawCid) {
+        return BigInt(rawCid);
+      }
+    } catch {}
+    return null;
   }
 
   // --- Raw command & file transfer pass-through ---

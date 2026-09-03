@@ -72,6 +72,7 @@ describe("csrfOriginCheck middleware", () => {
   });
 
   it("accepts POST when Origin matches X-Forwarded-Host behind reverse proxy", async () => {
+    app.set("trust proxy", true);
     const res = await request(app)
       .post("/")
       .set("Host", "127.0.0.1:3000")
@@ -81,11 +82,22 @@ describe("csrfOriginCheck middleware", () => {
   });
 
   it("supports comma-separated multi-hop X-Forwarded-Host", async () => {
+    app.set("trust proxy", true);
     const res = await request(app)
       .post("/")
       .set("Host", "127.0.0.1:3000")
       .set("X-Forwarded-Host", "music.example.com, internal-proxy.local")
       .set("Origin", "https://music.example.com");
     expect(res.status).toBe(200);
+  });
+
+  it("ignores X-Forwarded-Host when trust proxy is not enabled", async () => {
+    const res = await request(app)
+      .post("/")
+      .set("Host", "127.0.0.1:3000")
+      .set("X-Forwarded-Host", "evil.com")
+      .set("Origin", "https://evil.com");
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "bad origin" });
   });
 });

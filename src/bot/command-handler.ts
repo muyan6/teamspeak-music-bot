@@ -552,7 +552,15 @@ export class BotCommandHandler {
 
   async cmdFollow(msg?: TS3TextMessage): Promise<string> {
     if (!msg) return "Follow can only be used in TeamSpeak";
-    return "Following you to your channel";
+    const targetCid = await this.bot.tsClient.getClientChannelId(msg.invokerId);
+    if (!targetCid) {
+      return "无法确定你所在的频道";
+    }
+    if (this.bot.tsClient.getChannelId() === targetCid) {
+      return "机器人当前已在你的频道";
+    }
+    await this.bot.tsClient.joinChannel(targetCid.toString());
+    return "已跟随你进入频道";
   }
 
   savedQueuesGuard(): string | null {

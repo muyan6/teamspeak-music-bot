@@ -245,6 +245,7 @@ export class AudioPlayer extends EventEmitter {
   private externalDataHandler: ((chunk: Buffer) => void) | null = null;
   private externalEndHandler: (() => void) | null = null;
   private externalErrorHandler: ((err: Error) => void) | null = null;
+  private cachedSilenceOpusFrame: Buffer | null = null;
 
   constructor(logger: Logger) {
     super();
@@ -864,8 +865,10 @@ export class AudioPlayer extends EventEmitter {
 
   private emitSilenceFrame(): void {
     try {
-      const opusFrame = this.encoder.encode(AudioPlayer.SILENCE_FRAME);
-      this.emit("frame", opusFrame);
+      if (!this.cachedSilenceOpusFrame) {
+        this.cachedSilenceOpusFrame = this.encoder.encode(AudioPlayer.SILENCE_FRAME);
+      }
+      this.emit("frame", this.cachedSilenceOpusFrame);
       this.framesPlayed++;
     } catch (err) {
       this.emit("error", err as Error);

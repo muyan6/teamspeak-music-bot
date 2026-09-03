@@ -308,14 +308,6 @@ export class PlayQueue {
   /** Look ahead at the next song to be played without advancing the queue pointer. */
   peekNext(): QueuedSong | null {
     if (this.songs.length === 0) return null;
-    if (this.forwardStack.length > 0) {
-      for (let i = this.forwardStack.length - 1; i >= 0; i--) {
-        const target = this.forwardStack[i];
-        if (target >= 0 && target < this.songs.length && target !== this.currentIndex) {
-          return this.songs[target];
-        }
-      }
-    }
     if (this.mode === PlayMode.Sequential) {
       const nextIndex = this.currentIndex + 1;
       return nextIndex < this.songs.length ? this.songs[nextIndex] : null;
@@ -325,6 +317,14 @@ export class PlayQueue {
       return this.songs[nextIndex] ?? null;
     }
     if (this.mode === PlayMode.Random || this.mode === PlayMode.RandomLoop) {
+      if (this.forwardStack.length > 0) {
+        for (let i = this.forwardStack.length - 1; i >= 0; i--) {
+          const target = this.forwardStack[i];
+          if (target >= 0 && target < this.songs.length && target !== this.currentIndex) {
+            return this.songs[target];
+          }
+        }
+      }
       const unplayed: number[] = [];
       for (let i = 0; i < this.songs.length; i++) {
         if (!this.playedIndices.has(i) && i !== this.currentIndex) {

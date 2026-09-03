@@ -9,6 +9,7 @@ import { SESSION_TTL_MS, GUEST_SESSION_TTL_MS } from "../../data/sessions.js";
 import { GUEST_USER_ID, GUEST_USERNAME } from "../../data/users.js";
 import type { GuestModeConfig } from "../../data/config.js";
 import { SESSION_COOKIE_NAME, validateSessionFromHeaders, extractSessionToken } from "../auth/validateSession.js";
+import { requireNotGuest } from "../middleware/requireNotGuest.js";
 
 const FAILED_LOGIN_DELAY_MS = 250;
 
@@ -36,16 +37,6 @@ function isValidUsername(v: unknown): v is string {
 
 function isValidPassword(v: unknown): v is string {
   return typeof v === "string" && v.length >= 8 && v.length <= 200;
-}
-
-function parseTokenFromCookie(cookieHeader: string | undefined): string | null {
-  if (!cookieHeader) return null;
-  const match = cookieHeader
-    .split(";")
-    .map((p) => p.trim())
-    .find((p) => p.startsWith(`${SESSION_COOKIE_NAME}=`));
-  if (!match) return null;
-  return decodeURIComponent(match.slice(SESSION_COOKIE_NAME.length + 1));
 }
 
 export function createSessionRouter(
@@ -156,7 +147,7 @@ export function createSessionRouter(
   });
 
   router.post("/logout", (req, res) => {
-    const token = parseTokenFromCookie(req.headers.cookie);
+    const token = extractSessionToken(req.headers.cookie);
     if (token) {
       sessions.deleteSession(token);
     }
@@ -183,7 +174,7 @@ export function createSessionRouter(
     });
   });
 
-  router.post("/change-password", requireAuthInline, async (req, res) => {
+  router.post("/change-password", requireAuthInline, requireNotGuest, async (req, res) => {
     const { oldPassword, newPassword } = req.body ?? {};
     if (typeof oldPassword !== "string") {
       res.status(400).json({ error: "invalid request" });
@@ -200,7 +191,7 @@ export function createSessionRouter(
       return;
     }
     await users.changePassword(u.id, newPassword);
-    const currentToken = parseTokenFromCookie(req.headers.cookie);
+    const currentToken = extractSessionToken(req.headers.cookie);
     sessions.deleteAllForUser(u.id, currentToken ?? undefined);
     try {
       audit.record({

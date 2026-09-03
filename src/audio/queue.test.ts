@@ -790,6 +790,16 @@ describe("PlayQueue", () => {
       expect(queue.peekNext()?.id).toBe("x");
       expect(queue.next()?.id).toBe("x");
     });
+
+    it("keeps peekNext in sync with next in sequential mode even if forwardStack has entries", () => {
+      queue.setMode(PlayMode.Sequential);
+      for (const id of ["a", "b", "c"]) queue.add(makeSong(id));
+      queue.play(); // a (idx 0)
+      queue.next(); // b (idx 1)
+      queue.prev(); // a (idx 0), pushes b to forwardStack
+      expect(queue.peekNext()?.id).toBe("b");
+      expect(queue.next()?.id).toBe("b");
+    });
   });
 });
 

@@ -297,9 +297,10 @@ export class BiliBiliProvider implements MusicProvider {
     switch (code) {
       case 0: {
         // Login success — extract cookie from response headers
-        const setCookieHeaders = res.headers["set-cookie"];
-        if (setCookieHeaders) {
-          this.cookie = setCookieHeaders
+        const rawCookies = res.headers["set-cookie"];
+        if (rawCookies) {
+          const cookieList = Array.isArray(rawCookies) ? rawCookies : [rawCookies];
+          this.cookie = cookieList
             .map((c: string) => c.split(";")[0])
             .join("; ");
         }

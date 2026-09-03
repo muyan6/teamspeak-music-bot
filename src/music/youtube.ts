@@ -129,12 +129,17 @@ export class YouTubeProvider implements MusicProvider {
         "--quiet",
       ]);
       const lines = raw.trim().split("\n").filter(Boolean);
-      const songs: Song[] = lines
+      const entries: YtDlpEntry[] = [];
+      for (const line of lines) {
+        try {
+          entries.push(JSON.parse(line) as YtDlpEntry);
+        } catch {
+          // Ignore non-JSON lines emitted by yt-dlp
+        }
+      }
+      const songs: Song[] = entries
         .slice(offset, offset + limit)
-        .map((line) => {
-          const entry = JSON.parse(line) as YtDlpEntry;
-          return entryToSong(entry);
-        });
+        .map((entry) => entryToSong(entry));
       return { songs, playlists: [], albums: [] };
     } catch (err) {
       return {
@@ -199,7 +204,15 @@ export class YouTubeProvider implements MusicProvider {
         "--quiet",
       ], 60_000);
       const lines = raw.trim().split("\n").filter(Boolean);
-      return lines.map((line) => entryToSong(JSON.parse(line) as YtDlpEntry));
+      const songs: Song[] = [];
+      for (const line of lines) {
+        try {
+          songs.push(entryToSong(JSON.parse(line) as YtDlpEntry));
+        } catch {
+          // Ignore non-JSON lines emitted by yt-dlp
+        }
+      }
+      return songs;
     } catch {
       return [];
     }

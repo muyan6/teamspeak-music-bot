@@ -14,7 +14,10 @@ export function csrfOriginCheck(req: Request, res: Response, next: NextFunction)
     next();
     return;
   }
-  const forwardedHost = req.get("x-forwarded-host")?.split(",")[0].trim();
+  const isProxyTrusted = Boolean(req.app?.get("trust proxy"));
+  const forwardedHost = isProxyTrusted
+    ? req.get("x-forwarded-host")?.split(",")[0].trim()
+    : undefined;
   const expectedHost = forwardedHost || req.get("host");
   const originHeader = req.get("origin");
   const refererHeader = req.get("referer");
