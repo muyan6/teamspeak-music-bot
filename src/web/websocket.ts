@@ -21,13 +21,13 @@ export function setupWebSocket(
   const clients = new Set<WebSocket>();
 
   /**
-   * Whether a given bot is visible to a WebSocket client. Member/admin clients
-   * (non-guest) and guests with full scope see everything; scoped guests only
-   * see bots in their allowed set.
+   * Whether a given bot is visible to a WebSocket client. Clients with full
+   * scope ("all" or unset) see everything; scoped clients (restricted members
+   * or guests) only see bots in their allowed set.
    */
   function visibleToClient(ws: WebSocket, botId: string): boolean {
     const w = ws as unknown as { isGuest?: boolean; botScope?: "all" | Set<string> };
-    if (!w.isGuest || w.botScope === "all" || !w.botScope) return true;
+    if (!w.botScope || w.botScope === "all") return true;
     return w.botScope.has(botId);
   }
 

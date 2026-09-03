@@ -890,26 +890,29 @@ export class AudioPlayer extends EventEmitter {
       this.volumeBuffer = Buffer.alloc(pcm.length);
     }
     const out = this.volumeBuffer;
+    const sampleCount = pcm.length >> 1;
+    const inSamples = new Int16Array(pcm.buffer, pcm.byteOffset, sampleCount);
+    const outSamples = new Int16Array(out.buffer, out.byteOffset, sampleCount);
 
     // Most frames are outside the short attack/release windows. Preserve the
     // old constant-factor hot path instead of doing interpolation per sample.
     if (startFactor === endFactor) {
-      for (let i = 0; i < pcm.length; i += 2) {
-        const sample = Math.round(pcm.readInt16LE(i) * startFactor);
-        out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i);
+      for (let i = 0; i < sampleCount; i++) {
+        const sample = Math.round(inSamples[i] * startFactor);
+        outSamples[i] = sample < -32768 ? -32768 : sample > 32767 ? 32767 : sample;
       }
       return out.subarray(0, pcm.length);
     }
 
     // PCM is fixed at stereo s16le. Use one gain for each L/R pair so a ramp
     // never creates a tiny channel imbalance, and span the whole 20 ms frame.
-    const stereoFrames = Math.max(1, Math.ceil(pcm.length / 4));
-    for (let i = 0; i < pcm.length; i += 2) {
-      const frameIndex = Math.floor(i / 4);
+    const stereoFrames = Math.max(1, sampleCount >> 1);
+    for (let i = 0; i < sampleCount; i++) {
+      const frameIndex = i >> 1;
       const progress = stereoFrames === 1 ? 0 : frameIndex / (stereoFrames - 1);
       const factor = startFactor + (endFactor - startFactor) * progress;
-      const sample = Math.round(pcm.readInt16LE(i) * factor);
-      out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i);
+      const sample = Math.round(inSamples[i] * factor);
+      outSamples[i] = sample < -32768 ? -32768 : sample > 32767 ? 32767 : sample;
     }
     return out.subarray(0, pcm.length);
   }

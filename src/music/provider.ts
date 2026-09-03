@@ -83,10 +83,12 @@ export interface AuthStatus {
   avatarUrl?: string;
 }
 
+export type SearchType = "song" | "playlist" | "album" | "all";
+
 export interface MusicProvider {
   readonly platform: Platform;
 
-  search(query: string, limit?: number, offset?: number): Promise<SearchResult>;
+  search(query: string, limit?: number, offset?: number, type?: SearchType): Promise<SearchResult>;
   getSongUrl(songId: string, quality?: string): Promise<SongUrlResult | null>;
   setQuality(quality: string): void;
   getQuality(): string;

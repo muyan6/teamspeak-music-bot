@@ -113,6 +113,45 @@ describe("WebSocket guest bot scope", () => {
     expect(init.bots.map((b: any) => b.id)).toEqual(["bot1"]);
     cleanup();
   });
+
+  it("member init is filtered to the member's scoped bot set", () => {
+    const sent: any[] = [];
+    const fakeWs: any = {
+      readyState: 1,
+      isGuest: false,
+      botScope: new Set(["bot2"]),
+      send: (m: string) => sent.push(JSON.parse(m)),
+      on: () => {},
+    };
+    const fakeWss: any = {
+      on: (ev: string, cb: any) => {
+        if (ev === "connection") fakeWss._conn = cb;
+      },
+    };
+    const makeBot = (id: string) => ({
+      id,
+      getStatus: () => ({ id }),
+      getQueue: () => [],
+      on: () => {},
+      removeListener: () => {},
+    });
+    const botManager: any = {
+      getAllBots: () => [makeBot("bot1"), makeBot("bot2")],
+      on: () => {},
+      off: () => {},
+      removeListener: () => {},
+    };
+    const { cleanup } = setupWebSocket(fakeWss, botManager, {
+      debug() {},
+      error() {},
+      info() {},
+      warn() {},
+    } as any);
+    fakeWss._conn(fakeWs);
+    const init = sent.find((m) => m.type === "init");
+    expect(init.bots.map((b: any) => b.id)).toEqual(["bot2"]);
+    cleanup();
+  });
 });
 
 describe("WebSocket refreshGuestPolicy", () => {

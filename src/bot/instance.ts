@@ -1022,9 +1022,14 @@ export class BotInstance extends EventEmitter {
       const response = await this.executeCommand(parsed, msg);
       if (response) {
         // A single long reply (e.g. full lyrics) would exceed TeamSpeak's
-        // per-message byte cap, so split it and send the chunks in order.
-        for (const chunk of splitTextIntoChunks(response)) {
-          await this.tsClient.sendTextMessage(chunk);
+        // per-message byte cap, so split it and send the chunks in order with
+        // an anti-flood pacing delay between chunks.
+        const chunks = splitTextIntoChunks(response);
+        for (let i = 0; i < chunks.length; i++) {
+          if (i > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+          await this.tsClient.sendTextMessage(chunks[i]);
         }
       }
     } catch (err) {
@@ -1259,7 +1264,7 @@ export class BotInstance extends EventEmitter {
     const checkCandidate = async (p: (typeof candidatePlatforms)[number]) => {
       try {
         const candidateProvider = this.getProviderFor(p);
-        const searchResults = await candidateProvider.search(query, 1);
+        const searchResults = await candidateProvider.search(query, 1, 0, "song");
         if (searchResults?.songs && searchResults.songs.length > 0) {
           const match = searchResults.songs[0];
           const candidateResult = await candidateProvider.getSongUrl(match.id);
@@ -1277,22 +1282,23 @@ export class BotInstance extends EventEmitter {
       return null;
     };
 
-    const results = await Promise.all(candidatePlatforms.map(checkCandidate));
-    const chosen = results.find((r): r is NonNullable<typeof r> => r !== null);
-    if (chosen) {
-      this.logger.info(
-        { original: song.platform, fallback: chosen.platform, song: song.name },
-        "Auto-source fallback succeeded",
-      );
-      await this.tsClient
-        .sendTextMessage(
-          `🔄 [自动换源] 原音源无法播放，已自动切换至 ${chosen.platform} 播放《${song.name}》`,
-        )
-        .catch(() => {});
-      return {
-        url: chosen.url,
-        trialDuration: chosen.trialDuration,
-      };
+    for (const p of candidatePlatforms) {
+      const chosen = await checkCandidate(p);
+      if (chosen) {
+        this.logger.info(
+          { original: song.platform, fallback: chosen.platform, song: song.name },
+          "Auto-source fallback succeeded",
+        );
+        await this.tsClient
+          .sendTextMessage(
+            `🔄 [自动换源] 原音源无法播放，已自动切换至 ${chosen.platform} 播放《${song.name}》`,
+          )
+          .catch(() => {});
+        return {
+          url: chosen.url,
+          trialDuration: chosen.trialDuration,
+        };
+      }
     }
     return null;
   }
@@ -1530,7 +1536,7 @@ export class BotInstance extends EventEmitter {
 
     // 3) Plain search term — single most-popular hit (historical behavior).
     const provider = this.getProvider(cmd.flags);
-    const result = await provider.search(args, 1);
+    const result = await provider.search(args, 1, 0, "song");
     if (result.songs.length === 0) return { error: `No results found for: ${args}` };
     return { song: { ...result.songs[0], platform: provider.platform } };
   }
@@ -1539,7 +1545,7 @@ export class BotInstance extends EventEmitter {
     const p = this.config.commandPrefix;
     if (!cmd.args) return `Usage: ${p}search <name> [-q|-k|-b|-y]`;
     const provider = this.getProvider(cmd.flags);
-    const result = await provider.search(cmd.args, 8);
+    const result = await provider.search(cmd.args, 8, 0, "song");
     if (result.songs.length === 0) return `No results found for: ${cmd.args}`;
     this.lastSearchResults = result.songs.map((s) => ({ ...s, platform: provider.platform }));
     const lines = this.lastSearchResults.map(

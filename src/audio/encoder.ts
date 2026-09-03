@@ -45,6 +45,17 @@ export function createOpusEncoder(): Encoder {
   const OpusEncoderClass = loadOpusEncoderClass();
   if (OpusEncoderClass) {
     const opus = new OpusEncoderClass(SAMPLE_RATE, CHANNELS);
+    try {
+      if (typeof (opus as any).applyEncoderCTL === "function") {
+        // OPUS_SET_APPLICATION_REQUEST (4004), OPUS_APPLICATION_AUDIO (2049) for fullband music
+        (opus as any).applyEncoderCTL(4004, 2049);
+      }
+      if (typeof (opus as any).setBitrate === "function") {
+        (opus as any).setBitrate(128000);
+      }
+    } catch {
+      // ignore if CTL not supported by underlying native addon build
+    }
     return {
       encode(pcm: Buffer): Buffer {
         return opus.encode(pcm);

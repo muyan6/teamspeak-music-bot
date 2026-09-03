@@ -10,6 +10,7 @@ import type {
   QrCodeResult,
   AuthStatus,
   Album,
+  SearchType,
 } from "./provider.js";
 
 export function parseLyrics(lrc: string, tlyric?: string): LyricLine[] {
@@ -134,32 +135,42 @@ export class NeteaseProvider implements MusicProvider {
     return this.cookie ? { cookie: this.cookie } : {};
   }
 
-  async search(query: string, limit = 20, offset = 0): Promise<SearchResult> {
-    // /cloudsearch supports offset for every type. Songs, playlists (type 1000)
-    // and albums (type 10) are all limit/offset-driven so the web can page past
-    // the first page (playlists/albums were previously hardcoded to limit: 10).
+  async search(query: string, limit = 20, offset = 0, type: SearchType = "all"): Promise<SearchResult> {
+    const q = query.trim();
+    if (!q) return { songs: [], playlists: [], albums: [] };
+
+    const fetchSongs = type === "all" || type === "song";
+    const fetchPlaylists = type === "all" || type === "playlist";
+    const fetchAlbums = type === "all" || type === "album";
+
     const [songRes, playlistRes, albumRes] = await Promise.all([
-      this.api.get("/cloudsearch", {
-        params: { keywords: query, type: 1, limit, offset, ...this.cookieParams },
-      }),
-      this.api.get("/cloudsearch", {
-        params: {
-          keywords: query,
-          type: 1000,
-          limit,
-          offset,
-          ...this.cookieParams,
-        },
-      }),
-      this.api.get("/cloudsearch", {
-        params: { keywords: query, type: 10, limit, offset, ...this.cookieParams },
-      }),
+      fetchSongs
+        ? this.api.get("/cloudsearch", {
+            params: { keywords: q, type: 1, limit, offset, ...this.cookieParams },
+          }).catch(() => null)
+        : Promise.resolve(null),
+      fetchPlaylists
+        ? this.api.get("/cloudsearch", {
+            params: {
+              keywords: q,
+              type: 1000,
+              limit,
+              offset,
+              ...this.cookieParams,
+            },
+          }).catch(() => null)
+        : Promise.resolve(null),
+      fetchAlbums
+        ? this.api.get("/cloudsearch", {
+            params: { keywords: q, type: 10, limit, offset, ...this.cookieParams },
+          }).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
-    const songs: Song[] = mapNeteaseSongs(songRes.data?.result?.songs);
+    const songs: Song[] = songRes ? mapNeteaseSongs(songRes.data?.result?.songs) : [];
 
     const playlists: Playlist[] = (
-      playlistRes.data?.result?.playlists ?? []
+      playlistRes?.data?.result?.playlists ?? []
     ).map((p: any) => ({
       id: String(p.id),
       name: p.name,
@@ -168,7 +179,7 @@ export class NeteaseProvider implements MusicProvider {
       platform: "netease",
     }));
 
-    const albums = mapNeteaseAlbums(albumRes.data?.result?.albums);
+    const albums = albumRes ? mapNeteaseAlbums(albumRes.data?.result?.albums) : [];
 
     return { songs, playlists, albums };
   }

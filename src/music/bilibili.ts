@@ -9,6 +9,7 @@ import type {
   SearchResult,
   QrCodeResult,
   AuthStatus,
+  SearchType,
 } from "./provider.js";
 
 const BILIBILI_HEADERS = {
@@ -147,7 +148,7 @@ export class BiliBiliProvider implements MusicProvider {
     return fixed;
   }
 
-  async search(query: string, limit = 20, offset = 0): Promise<SearchResult> {
+  async search(query: string, limit = 20, offset = 0, _type: SearchType = "all"): Promise<SearchResult> {
     await this.ensureBuvidCookie();
     await this.ensureWbiKeys();
     // /search/type is page-based; the web pages in limit-aligned steps so
@@ -163,6 +164,12 @@ export class BiliBiliProvider implements MusicProvider {
       params: signed,
       headers: this.cookieHeaders,
     });
+
+    const code = res.data?.code;
+    if (code === -412 || code === -400 || code === -101) {
+      this.wbiMixinKey = "";
+      this.wbiKeyFetchedAt = 0;
+    }
 
     const results = res.data?.data?.result ?? [];
     const songs: Song[] = results.map((v: any) => ({

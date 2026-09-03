@@ -275,10 +275,13 @@ export function createWebServer(options: WebServerOptions): WebServer {
       return;
     }
     const guestBots = options.config.guestMode.bots;
-    const botScope: "all" | Set<string> =
-      result.role === "guest"
-        ? guestBots === "all" ? "all" : new Set(guestBots)
-        : "all";
+    let botScope: "all" | Set<string> = "all";
+    if (result.role === "guest") {
+      botScope = guestBots === "all" ? "all" : new Set(guestBots);
+    } else if (result.role === "member") {
+      const access = permissions.getBotAccess(result.userId);
+      botScope = access === "all" ? "all" : new Set(access);
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const w = ws as unknown as { userId: string; isGuest: boolean; botScope: "all" | Set<string> };
       w.userId = result.userId;

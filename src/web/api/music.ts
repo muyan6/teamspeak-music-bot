@@ -1,5 +1,5 @@
 import express, { Router, type Response } from "express";
-import type { MusicProvider, Song, Album, LyricLine, SearchResult } from "../../music/provider.js";
+import type { MusicProvider, Song, Album, LyricLine, SearchResult, SearchType } from "../../music/provider.js";
 import { YouTubeProvider } from "../../music/youtube.js";
 import type { Logger } from "../../logger.js";
 import { isProviderEnabled, defaultPlatform, saveConfig, type BotConfig } from "../../data/config.js";
@@ -199,7 +199,7 @@ export function createMusicRouter(
 
   router.get("/search", async (req, res) => {
     try {
-      const { q, platform, limit, offset } = req.query;
+      const { q, platform, limit, offset, type } = req.query;
       if (!q) {
         res.status(400).json({ error: "q (query) is required" });
         return;
@@ -214,17 +214,27 @@ export function createMusicRouter(
       // Clamp to >= 0 so a bad/negative value falls back to the first page.
       const parsedOffset = Math.max(0, parseInt(offset as string) || 0);
       const parsedLimit = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
-      const cacheKey = `${String(platform ?? "default")}:${String(q).trim().toLowerCase()}:${parsedLimit}:${parsedOffset}`;
+      const parsedType = (typeof type === "string" && ["song", "playlist", "album", "all"].includes(type))
+        ? (type as SearchType)
+        : "all";
+      const cacheKey = `${String(platform ?? "default")}:${String(q).trim().toLowerCase()}:${parsedLimit}:${parsedOffset}:${parsedType}`;
       const cached = searchCache.get(cacheKey);
       if (cached) {
         res.json(cached);
         return;
       }
-      const result = await provider.search(
-        q as string,
-        parsedLimit,
-        parsedOffset
-      );
+      const result = parsedType && parsedType !== "all"
+        ? await provider.search(
+            q as string,
+            parsedLimit,
+            parsedOffset,
+            parsedType
+          )
+        : await provider.search(
+            q as string,
+            parsedLimit,
+            parsedOffset
+          );
       searchCache.set(cacheKey, result);
       res.json(result);
     } catch (err) {
