@@ -4,6 +4,7 @@ export const CAPABILITIES = [
   "player.control",
   "player.queue",
   "bot.manage",
+  "bot.create",
   "platform.auth",
   "quality",
 ] as const;

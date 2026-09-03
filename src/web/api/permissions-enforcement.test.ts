@@ -134,8 +134,8 @@ describe("permission enforcement on action routes", () => {
     });
   });
 
-  describe("bot.manage", () => {
-    it("403 for member WITHOUT bot.manage on POST /api/bot", async () => {
+  describe("bot.create", () => {
+    it("403 for member WITHOUT bot.create on POST /api/bot", async () => {
       const app = makeApp(member([], "all"));
       const res = await request(app)
         .post("/api/bot")
@@ -143,14 +143,24 @@ describe("permission enforcement on action routes", () => {
       expect(res.status).toBe(403);
     });
 
-    it("NOT 403 for member WITH bot.manage on POST /api/bot", async () => {
+    it("403 for member WITH bot.manage but WITHOUT bot.create on POST /api/bot", async () => {
       const app = makeApp(member(["bot.manage"], "all"));
+      const res = await request(app)
+        .post("/api/bot")
+        .send({ name: "n", serverAddress: "s", nickname: "nick" });
+      expect(res.status).toBe(403);
+    });
+
+    it("NOT 403 for member WITH bot.create on POST /api/bot", async () => {
+      const app = makeApp(member(["bot.create"], "all"));
       const res = await request(app)
         .post("/api/bot")
         .send({ name: "n", serverAddress: "s", nickname: "nick" });
       expect(res.status).not.toBe(403);
     });
+  });
 
+  describe("bot.manage", () => {
     it("403 for member WITH bot.manage but bot NOT in allow-list on POST /api/bot/:id/start", async () => {
       const app = makeApp(member(["bot.manage"], ["other-bot"]));
       const res = await request(app).post(`/api/bot/${ALLOWED_BOT}/start`);
@@ -258,7 +268,7 @@ describe("permission enforcement on action routes", () => {
     it("player.queue", async () => {
       expect((await request(app).post(`/api/player/${ALLOWED_BOT}/clear`)).status).not.toBe(403);
     });
-    it("bot.manage POST /api/bot", async () => {
+    it("bot.create POST /api/bot", async () => {
       const res = await request(app).post("/api/bot").send({ name: "n", serverAddress: "s", nickname: "nick" });
       expect(res.status).not.toBe(403);
     });

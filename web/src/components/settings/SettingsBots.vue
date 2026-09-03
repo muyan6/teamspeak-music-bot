@@ -140,8 +140,8 @@
       </div>
     </div>
 
-    <!-- Create Bot Form -->
-    <form class="create-bot-form" @submit.prevent="createBot">
+    <!-- Create Bot Form (requires bot.create) -->
+    <form v-if="can('bot.create')" class="create-bot-form" @submit.prevent="createBot">
       <h3 class="form-title">添加机器人</h3>
       <div class="form-row">
         <div class="form-group">

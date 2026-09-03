@@ -166,8 +166,8 @@
         </div>
       </div>
 
-      <!-- Create Bot -->
-      <div class="create-bot">
+      <!-- Create Bot (requires bot.create) -->
+      <div v-if="can('bot.create')" class="create-bot">
         <h3 class="subsection-title">创建新实例</h3>
         <div class="form-group">
           <label>名称</label>
@@ -2370,6 +2370,7 @@ const CAPABILITIES: { token: string; label: string }[] = [
   { token: 'player.control', label: '播放控制' },
   { token: 'player.queue', label: '队列管理' },
   { token: 'bot.manage', label: '机器人管理' },
+  { token: 'bot.create', label: '创建新实例' },
   { token: 'platform.auth', label: '平台登录凭据' },
   { token: 'quality', label: '音质设置' },
 ];

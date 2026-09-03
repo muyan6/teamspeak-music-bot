@@ -25,9 +25,9 @@ describe("PermissionStore", () => {
     try { fs.rmSync(dbFile + "-shm", { force: true }); } catch {}
   });
 
-  it("exposes the five capability tokens and a basic tier", () => {
+  it("exposes the capability tokens and a basic tier", () => {
     expect(CAPABILITIES).toEqual([
-      "player.control", "player.queue", "bot.manage", "platform.auth", "quality",
+      "player.control", "player.queue", "bot.manage", "bot.create", "platform.auth", "quality",
     ]);
     expect(BASIC_TIER_CAPABILITIES).toEqual(["player.control", "player.queue"]);
   });

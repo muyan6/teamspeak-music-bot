@@ -490,7 +490,7 @@ export function createBotRouter(
     res.status(204).end();
   });
 
-  router.post("/", requirePermission("bot.manage"), async (req, res) => {
+  router.post("/", requirePermission("bot.create"), async (req, res) => {
     try {
       const body = req.body as Record<string, unknown>;
       const name = requiredBotText(body.name, "name", 100);
